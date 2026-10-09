@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.3（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.4（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -51,6 +51,7 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
+TOOL_VERSION = "v1.4"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.21.1"          # 深度适配验证过的版本（Windows 真机实测）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
@@ -1348,7 +1349,7 @@ def cmd_apply(resources, npx, auto_yes=False):
         die(f"未找到 {asar}")
 
     print("=" * 62)
-    print("  Antigravity 一键汉化 v1.3（Windows / macOS 双平台）")
+    print(f"  Antigravity 一键汉化 {TOOL_VERSION}（Windows / macOS 双平台）")
     print("=" * 62)
     log(f"目标：{asar}")
 
@@ -1731,7 +1732,7 @@ def main():
         while True:
             plat = "macOS" if IS_MAC else ("Windows" if IS_WIN else "Linux")
             print("=" * 62)
-            print(f"  Antigravity 一键汉化 v1.3（当前系统：{plat}）")
+            print(f"  Antigravity 一键汉化 {TOOL_VERSION}（当前系统：{plat}）")
             print("=" * 62)
             print("  [1] 一键汉化（官方更新后重新运行即可）")
             print("  [2] 恢复官方英文原版")
