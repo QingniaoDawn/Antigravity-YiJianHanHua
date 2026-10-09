@@ -75,7 +75,6 @@ except Exception:
 # ----------------------------------------------------------------------------
 # 常量
 # ----------------------------------------------------------------------------
-TOOL_VERSION = "v1.4"               # 工具版本号（唯一数据源，改这里即可全局生效）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENGINE_PATH = os.path.join(SCRIPT_DIR, "engine.js")
 DATA_PATH = os.path.join(SCRIPT_DIR, "zh_data.json")
