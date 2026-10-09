@@ -81,8 +81,58 @@
 
         var out = pipeline(trimmed);
         out = normalizeMonths(out);
+        out = fixMacKeys(out);
         cachePut(trimmed, out);
         return text.replace(trimmed, out);
+    }
+
+    // ---------------- macOS 键位修正 ----------------
+    // 词典源自 VS Code，其快捷键文案按 Windows 写死（Ctrl+X）。
+    // macOS 上 Command 才是对应键，直接照搬会让用户按错键。
+    // 这里只在检测到 macOS 时把 Ctrl/Alt 换成 Command/Option，Windows 保持原样。
+    var IS_MAC_OS = (function () {
+        try {
+            if (typeof navigator !== 'undefined' && navigator.platform) {
+                return /Mac|iPhone|iPad/i.test(navigator.platform);
+            }
+            if (typeof process !== 'undefined' && process.platform) {
+                return process.platform === 'darwin';
+            }
+        } catch (e) { /* 忽略 */ }
+        return false;
+    })();
+
+    // 键位映射：只在 macOS 上把 Ctrl/Alt 换成 Command/Option。
+    // Shift/Win/Meta 不动。Cmd/Ctrl 这类跨平台并列写法保留原样。
+    var MAC_KEY_MAP = [
+        [/\bCtrl\s*\+/g, '⌘'],
+        [/\bCtrl\b(?!\+)/g, 'Control'],
+        [/\bAlt\s*\+/g, '⌥'],
+        [/\bAlt\b(?!\+)/g, 'Option'],
+        [/\bCmd\b/g, '⌘']
+    ];
+
+    // 这些文本本身在讲平台差异或并列写法，改键名反而误导
+    var MAC_KEY_SKIP = [
+        /Windows.*(Ctrl|Control)/i,
+        /Ctrl.*Windows/i,
+        /(Windows|Linux).*(macOS|Mac)/i,
+        /Cmd\s*\/\s*Ctrl/i,
+        /Ctrl\s*\/\s*Alt/i
+    ];
+
+    function fixMacKeys(s) {
+        if (!IS_MAC_OS || !s) return s;
+        // 仅当译文里含 Windows 键名时才处理，避免无谓开销
+        if (!/\b(Ctrl|Alt|Cmd)\b/.test(s)) return s;
+        for (var k = 0; k < MAC_KEY_SKIP.length; k++) {
+            if (MAC_KEY_SKIP[k].test(s)) return s;
+        }
+        var out = s;
+        for (var i = 0; i < MAC_KEY_MAP.length; i++) {
+            out = out.replace(MAC_KEY_MAP[i][0], MAC_KEY_MAP[i][1]);
+        }
+        return out;
     }
 
     function pipeline(t) {
