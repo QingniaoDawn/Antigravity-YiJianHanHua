@@ -1,5 +1,5 @@
 // =============================================================================
-// Antigravity 一键汉化引擎 v1.2
+// Antigravity 一键汉化引擎 v1.4
 // 设计要点：
 //   - 纯 Web API（无 require/network），preload 沙箱环境可用
 //   - 多级瀑布翻译管道 + O(1) 缓存
@@ -543,7 +543,7 @@
 
     // 调试句柄（F12 控制台可用 window.__AGY_ZH_DEBUG__.stats() 查看运行状态）
     window.__AGY_ZH_DEBUG__ = {
-        version: '1.0.0',
+        version: '1.4.0',
         stats: function () {
             return {
                 active: true,
