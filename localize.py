@@ -51,7 +51,7 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TESTED_VERSION = "2.18.1"          # 深度适配验证过的版本（Windows 真机实测）
+TESTED_VERSION = "2.21.1"          # 深度适配验证过的版本（Windows 真机实测）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
 IS_MAC = sys.platform == "darwin"
