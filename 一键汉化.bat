@@ -1,12 +1,12 @@
 @echo off
-rem Antigravity One-Click Chinese Localization v1.2
+rem Antigravity One-Click Chinese Localization (Windows / macOS)
 rem Run this file again after every official Antigravity update.
 cd /d "%~dp0"
 
 echo.
 echo  ==============================================================
-echo    Antigravity YiJian HanHua v1.2
-echo    (官方更新后界面变回英文时, 双击本文件重新汉化即可)
+echo    Antigravity YiJian HanHua v1.4
+echo    (首次汉化请耐心等待约 1 分钟，全程仅本地操作)
 echo  ==============================================================
 echo.
 
@@ -29,7 +29,7 @@ set "EXITCODE=%ERRORLEVEL%"
 if not "%EXITCODE%"=="0" (
     echo.
     echo  [提示] 执行出错, 代码 %EXITCODE%.
-    echo  如上方无明确报错, 可尝试右键"以管理员身份运行"本文件.
+    echo  常见原因见 README.md 的「常见问题」一节.
 )
 
 :END
