@@ -1,0 +1,28 @@
+# ============================================
+# 行尾规则：防止 Windows 的 CRLF 破坏 macOS 脚本
+# ============================================
+# 背景：Antigravity 一键汉化同时支持 Windows 与 macOS。
+# macOS 的 .command 是 bash 脚本，若被 Git 转成 CRLF（Windows 记事本式换行），
+# 在 Mac 上执行会直接报错：
+#   bad interpreter: /bin/bash^M
+# 因此对 .command 强制 LF，且不做任何双向转换。
+*.command text eol=lf
+
+# shell 脚本同样必须 LF
+*.sh text eol=lf
+
+# 词典/引擎/主程序统一 LF（Python 与 Node 在两平台都能正常处理 LF）
+*.py text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# 二进制文件不做任何转换
+*.jpg text=false
+*.png text=false
+*.zip text=false
+*.dmg text=false
+*.ico text=false
+
+# Windows 的 .bat 保持 CRLF（cmd 对 LF 支持不完整）
+*.bat text eol=crlf
