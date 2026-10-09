@@ -31,15 +31,51 @@ import sys
 import tempfile
 import time
 
+# 控制台编码自适应：Windows 中文版默认代码页 936(GBK)，无法表示部分符号
+# （如 ✗ ⚠），若不处理会显示成问号或触发 UnicodeEncodeError。
+# 策略：优先用 UTF-8 输出（Windows 10 起支持良好）；若终端明确是 GBK，
+# 则把不可表示的符号降级为等价的 ASCII/中文写法，确保任何环境下都不乱码。
+def _console_supports(ch):
+    enc = (getattr(sys.stdout, "encoding", None) or "utf-8").lower()
+    try:
+        ch.encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+_GLYPH = {
+    # 降级值为纯 ASCII 且不含方括号，避免与外层 [tag] 叠加成 [[OK]]
+    "✓": "v",   # ✓ 对勾 → v（checkmark 近似）
+    "✗": "x",        # ✗ 叉号 → x
+    "△": "!",        # △ 三角 → !
+    "·": "-",          # · 间隔号 → -
+    "→": "->",         # → 箭头 → ->
+    "⚠": "!",        # ⚠ 警告 → !
+    "★": "*",          # ★ 星 → *
+}
+
+
+def _fit_glyphs(text):
+    """把文本里当前终端无法表示的符号替换为等价写法。
+    替换值已是纯 ASCII，因此不会出现重复括号。"""
+    out = text
+    for ch, alt in _GLYPH.items():
+        if ch in out and not _console_supports(ch):
+            out = out.replace(ch, alt)
+    return out
+
+
 try:
-    sys.stdout.reconfigure(errors='replace')
-    sys.stderr.reconfigure(errors='replace')
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
 except Exception:
     pass
 
 # ----------------------------------------------------------------------------
 # 常量
 # ----------------------------------------------------------------------------
+TOOL_VERSION = "v1.4"               # 工具版本号（唯一数据源，改这里即可全局生效）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENGINE_PATH = os.path.join(SCRIPT_DIR, "engine.js")
 DATA_PATH = os.path.join(SCRIPT_DIR, "zh_data.json")
@@ -87,12 +123,19 @@ PROC_NAMES = ["Antigravity.exe", "language_server.exe"]
 
 
 def log(msg, ok=False, warn=False):
-    tag = "[✓]" if ok else ("[!]" if warn else "[·]")
-    print(f"{tag} {msg}", flush=True)
+    """统一日志出口。图标按终端编码能力自适应：
+    UTF-8 终端显示 ✓ ·，GBK 等旧终端自动降级为纯 ASCII，任何环境都不乱码。"""
+    if ok:
+        tag = _fit_glyphs("[✓]")
+    elif warn:
+        tag = "[!]"
+    else:
+        tag = _fit_glyphs("[·]")
+    print(_fit_glyphs(f"{tag} {msg}"), flush=True)
 
 
 def die(msg, code=1):
-    print(f"[✗] {msg}", flush=True)
+    print(_fit_glyphs(f"[✗] {msg}"), flush=True)
     sys.exit(code)
 
 
@@ -1417,7 +1460,7 @@ def cmd_apply(resources, npx, auto_yes=False):
     bad = node_check(modified)
     if bad:
         for f, err in bad:
-            print(f"[✗] 语法校验失败：{os.path.basename(f)}\n{err}")
+            print(_fit_glyphs(f"[✗] 语法校验失败：{os.path.basename(f)}\n{err}"))
         cleanup_temp(resources, work)
         die("语法门禁未通过，已中止（原 app.asar 未被修改，软件不受影响）。")
     log(f"语法门禁：{len(modified)} 个文件全部通过 node --check", ok=True)
@@ -1538,8 +1581,8 @@ def cmd_apply(resources, npx, auto_yes=False):
     # 9. 结果报告
     print("-" * 62)
     for kind, label, ok_ in report:
-        mark = "✓" if ok_ else "△"
-        print(f"  {mark} [{kind}] {label}")
+        mark = _fit_glyphs("✓") if ok_ else _fit_glyphs("△")
+        print(_fit_glyphs(f"  {mark} [{kind}] {label}"))
     fails = [r for r in report if not r[2]]
     if fails:
         # 区分两类未命中，避免 macOS 用户把"平台本来就没有的弹窗"误当成故障
@@ -1665,7 +1708,7 @@ def cmd_chinese_output(auto_yes=False):
     print("  AI 回复中文化（全局规则）")
     print("=" * 62)
     if os.path.isfile(path):
-        print("[✓] 当前状态：已启用（规则文件存在）")
+        print(_fit_glyphs("[✓] 当前状态：已启用（规则文件存在）"))
         print("-" * 62)
         print(RULE_BODY)
         ans = "y" if auto_yes else input("输入 1=保留并刷新 / 2=移除该规则 / 回车=取消：").strip()
