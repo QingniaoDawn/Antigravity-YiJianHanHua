@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.5（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.6（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -86,8 +86,8 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.5"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.23.1"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1）
+TOOL_VERSION = "v1.6"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.24.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
 IS_MAC = sys.platform == "darwin"
