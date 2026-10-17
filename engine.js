@@ -87,7 +87,7 @@
     }
 
     // ---------------- macOS 键位修正 ----------------
-    // 词典源自 VS Code，其快捷键文案按 Windows 写死（Ctrl+X）。
+    // 词典中的快捷键文案按 Windows 写死（Ctrl+X）。
     // macOS 上 Command 才是对应键，直接照搬会让用户按错键。
     // 这里只在检测到 macOS 时把 Ctrl/Alt 换成 Command/Option，Windows 保持原样。
     var IS_MAC_OS = (function () {
