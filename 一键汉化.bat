@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo  ==============================================================
-echo    Antigravity YiJian HanHua v1.9.2
+echo    Antigravity YiJian HanHua v1.7
 echo    (首次汉化请耐心等待约 1 分钟，全程仅本地操作)
 echo  ==============================================================
 echo.
