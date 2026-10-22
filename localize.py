@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.9（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.9.1（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -86,7 +86,7 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.9"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.9.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.25.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
@@ -1165,7 +1165,10 @@ def build_menu_block(data):
     return (f"\n{MENU_START}\n"
             f"const __AGY_ZH_MENU_MAP__ = {json.dumps(menu_map, ensure_ascii=False)};\n"
             f"function __AGY_ZH_MENU_TRANSLATE__(mi) {{\n"
-            f"    if (mi && mi.label && __AGY_ZH_MENU_MAP__[mi.label]) mi.label = __AGY_ZH_MENU_MAP__[mi.label];\n"
+            f"    if (mi && mi.label && __AGY_ZH_MENU_MAP__[mi.label]) {{\n"
+            f"        if (mi.__agyZhOrigLabel === undefined) mi.__agyZhOrigLabel = mi.label;\n"
+            f"        mi.label = __AGY_ZH_MENU_MAP__[mi.label];\n"
+            f"    }}\n"
             f"    if (mi && mi.submenu) {{\n"
             f"        if (mi.submenu.items) mi.submenu.items.forEach(__AGY_ZH_MENU_TRANSLATE__);\n"
             f"        else if (Array.isArray(mi.submenu)) mi.submenu.forEach(__AGY_ZH_MENU_TRANSLATE__);\n"
@@ -1200,7 +1203,13 @@ def menu_hook_pairs():
     find_orig = "const submenuItem = appMenu.items.find((item) => item.label === submenuLabel);"
     tray_hooked = "electron_1.Menu.buildFromTemplate(__AGY_ZH_TRAY_ACTIONS__(actions));"
     tray_orig = "electron_1.Menu.buildFromTemplate(actions);"
-    return [(set_hooked, set_orig), (find_hooked, find_orig), (tray_hooked, tray_orig)]
+    # 更新菜单项的点击处理用 menuItem.label 查动作表（updateActions 的键是英文枚举）。
+    # 标签被翻成中文后查不到 → 点击静默无效。加一条回退到原始英文标签。
+    upd_click_orig = "const action = updater_1.updateActions[menuItem.label];"
+    upd_click_hooked = ("const action = updater_1.updateActions[menuItem.label] || "
+                        "updater_1.updateActions[menuItem.__agyZhOrigLabel];")
+    return [(set_hooked, set_orig), (find_hooked, find_orig), (tray_hooked, tray_orig),
+            (upd_click_hooked, upd_click_orig)]
 
 
 def patch_all(extract_dir, engine_code, data, report):
@@ -1255,6 +1264,15 @@ def patch_all(extract_dir, engine_code, data, report):
             report.append(("已生效", "menu.js 子菜单双语查找", True))
         else:
             report.append(("未命中", "menu.js 子菜单双语查找", False))
+        # 更新菜单项点击：翻译后 label 变中文，updateActions 查不到 → 回退原始 label
+        upd_hooked, upd_orig = menu_hook_pairs()[3]
+        if upd_orig in c:
+            c = c.replace(upd_orig, upd_hooked)
+            report.append(("替换", "menu.js 更新菜单点击兼容翻译", True))
+        elif upd_hooked in c:
+            report.append(("已生效", "menu.js 更新菜单点击兼容", True))
+        else:
+            report.append(("未命中", "menu.js 更新菜单点击兼容（官方结构变动，菜单项可能失效）", False))
         c = c.rstrip("\n") + "\n" + build_menu_block(data)
         wr(p, c)
         report.append(("注入", "dist/menu.js 菜单翻译映射", True))
@@ -1293,6 +1311,31 @@ def patch_all(extract_dir, engine_code, data, report):
             c = new
         if changed:
             wr(p, c)
+
+    # ---- 6. dist/updater.js：更新菜单项译文兼容 ----
+    # updateMenuState() 里 `item.label = step` 会把译文覆盖回英文；
+    # 同时该 label 又被 updateActions 当键用。这里保留英文原值到 __agyZhOrigLabel，
+    # 显示层用译文，查表仍用英文原值。
+    p = os.path.join(extract_dir, "dist", "updater.js")
+    if os.path.isfile(p):
+        c = rd(p)
+        find_orig = ("            item.label = step;\n"
+                     "            item.enabled = exports.updateActions[step] !== undefined;")
+        step_map = {k: v for k, v in data.get("menuMap", {}).items()
+                    if k in ("Check for Updates", "Checking for Updates...",
+                             "Downloading Update...", "Restart to Update")}
+        find_hooked = ("            item.__agyZhOrigLabel = step;\n"
+                       f"            item.label = {json.dumps(step_map, ensure_ascii=False)}[step] || step;\n"
+                       "            item.enabled = exports.updateActions[step] !== undefined;")
+        if find_orig in c:
+            c = c.replace(find_orig, find_hooked)
+            wr(p, c)
+            report.append(("替换", "updater.js 更新菜单项译文兼容", True))
+        elif find_hooked in c:
+            report.append(("已生效", "updater.js 更新菜单项译文兼容", True))
+        else:
+            report.append(("未命中", "updater.js 更新菜单项译文兼容（官方结构变动）", False))
+
     return modified
 
 
