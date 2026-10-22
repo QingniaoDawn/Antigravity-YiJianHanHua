@@ -294,11 +294,16 @@
     }
 
     // ---------------- 5. DOM 遍历与属性翻译 ----------------
-    var ATTRS = ['placeholder', 'title', 'aria-label', 'data-tooltip', 'data-placeholder'];
+    // 注意：这里**故意不含 aria-label**。
+    // 原因（2.25.0 实测代码）：Antigravity 会把 aria-label 当稳定标识用，例如
+    //   input.onBlur 里 `relatedTarget.getAttribute("aria-label")==="Cancel"`
+    // 一旦把它翻成「取消」，判断失效，点「取消」反而会提交内容。
+    // aria-label 是给读屏软件的标识、不是展示文案，不翻不影响任何可见文字。
+    var ATTRS = ['placeholder', 'title', 'data-tooltip', 'data-placeholder'];
     var translatedNodes = new WeakSet();
 
-    // 属性提示文案翻译：placeholder/aria-label/title 是纯展示内容，
-    // 即使元素位于输入区/思考链等跳过区也可以安全翻译（ATTRS 不含 value，用户输入绝不动）
+    // 属性提示文案翻译：placeholder/title/data-tooltip 是纯展示内容，
+    // 即使元素位于输入区/思考链等跳过区也可以安全翻译（ATTRS 不含 value/aria-label）
     function translateAttrs(node) {
         if (!node.hasAttribute) return;
         for (var a = 0; a < ATTRS.length; a++) {
