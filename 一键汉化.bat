@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo  ==============================================================
-echo    Antigravity YiJian HanHua v1.9.1
+echo    Antigravity YiJian HanHua v1.9.2
 echo    (首次汉化请耐心等待约 1 分钟，全程仅本地操作)
 echo  ==============================================================
 echo.
@@ -33,5 +33,7 @@ if not "%EXITCODE%"=="0" (
 )
 
 :END
-echo.
-pause
+if not "%EXITCODE%"=="0" (
+    echo.
+    pause
+)

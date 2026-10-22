@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.9.1（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.9.2（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -86,7 +86,7 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.9.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.9.2"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.25.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
@@ -1783,6 +1783,14 @@ def cmd_chinese_output(auto_yes=False):
 # ----------------------------------------------------------------------------
 # 入口
 # ----------------------------------------------------------------------------
+def menu_pause():
+    """操作结束后停一下让用户看结果；回车回主菜单，窗口不会关闭。"""
+    try:
+        input("\n  按回车返回主菜单（输入 0 可退出，或直接关窗口）...")
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit(0)
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     auto_yes = "--yes" in args or "/y" in args
@@ -1824,6 +1832,7 @@ def main():
             print("  [3] 查看状态")
             print("  [4] AI 回复中文化（让 AI 用中文回答，可开可关）")
             print("  [0] 退出")
+            print("  （每个操作做完会回到本菜单，可以接着做下一件事）")
             if IS_MAC:
                 print("  提示：Mac 上如提示「应用已损坏」，选3 查看状态里的签名项")
             try:
@@ -1837,22 +1846,27 @@ def main():
                     cmd_apply(resources, npx, auto_yes=False)
                 finally:
                     release_lock(lock)
-                return
+                menu_pause()
+                continue
             if c == "2":
                 lock = acquire_lock()
                 try:
                     cmd_restore(resources)
                 finally:
                     release_lock(lock)
-                return
+                menu_pause()
+                continue
             if c == "3":
                 cmd_status(resources)
-                return
+                menu_pause()
+                continue
             if c == "4":
                 cmd_chinese_output()
-                return
+                menu_pause()
+                continue
             if c == "0":
                 return
+            print("\n  输入无效，请重新选择（1 / 2 / 3 / 4 / 0）。")
     else:
         print(__doc__)
 
