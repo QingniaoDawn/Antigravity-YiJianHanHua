@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.7（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.8（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -8,11 +8,14 @@ Antigravity 一键汉化 v1.7（Windows / macOS 双平台）
   python localize.py restore    # 恢复官方英文原版
   python localize.py status     # 查看状态
   python localize.py chinese-output   # AI 回复中文化（写入全局规则）
+  python localize.py update           # 检查更新（查 GitHub Release，只下载不替换）
   可选：--path <安装目录>  --yes（免确认）
 
 流程：杀进程 → 备份 → 解包 → 注入 → 语法门禁 → 打包 → 部署后复检 → 原子替换
       →（macOS 追加）代码签名重签 → 启动
-安全：全程仅本地操作，无任何网络行为；所有修改幂等可重入；备份永不降级。
+安全：汉化 / 还原 / 状态 / AI 中文化全程仅本地操作，无任何网络行为；唯一例外是
+      「检查更新」，只有你主动点它才会连一次 GitHub（只查版本号，不自动替换）。
+      所有修改幂等可重入；备份永不降级。
 
 跨平台说明：
   本脚本为 Windows / macOS 双平台共用，按当前系统自动走对应分支。
@@ -23,13 +26,17 @@ Antigravity 一键汉化 v1.7（Windows / macOS 双平台）
        （Apple Silicon 上直接启动失败）。重签采用 Apple 推荐的分层方式：
        嵌套组件裸签 → 主包带 entitlements 签。全程需管理员密码。
 """
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 
 # 控制台编码自适应：Windows 中文版默认代码页 936(GBK)，无法表示部分符号
 # （如 ✗ ⚠），若不处理会显示成问号或触发 UnicodeEncodeError。
@@ -86,9 +93,17 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.7"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.25.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0）
+TOOL_VERSION = "v1.8"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.27.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
+
+# --- 检查更新（全程序唯一的联网入口，仅当用户主动点「检查更新」才会触发）---
+UPDATE_REPO = "QingniaoDawn/Antigravity-YiJianHanHua"
+UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+UPDATE_PAGE = f"https://github.com/{UPDATE_REPO}/releases/latest"
+UPDATE_TIMEOUT = 6          # 查版本号的超时（秒）：查不到就当没更新，绝不能卡住用户
+DOWNLOAD_TIMEOUT = 30       # 下载时单块读取超时（秒）
+DL_CHUNK = 65536            # 下载分块大小
 
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
@@ -511,12 +526,38 @@ def kill_processes(auto=False, resources_dir=None):
 def launch_app(resources_dir):
     if IS_WIN:
         exe = os.path.join(os.path.dirname(resources_dir), "Antigravity.exe")
-        if os.path.isfile(exe):
+        if not os.path.isfile(exe):
+            return
+        # Windows 启动必须"断干净"，否则会踩三个坑（用户实测反馈）：
+        #   1. Antigravity 的日志（DevTools 端口、wsl.exe 报错、自动更新）直接刷在本窗口上，
+        #      满屏英文乱码，把菜单提示顶没了；
+        #   2. 本窗口和它共享同一个控制台，用户点右上角 X 关窗口时，系统会发 CTRL_CLOSE
+        #      给控制台里的所有进程，Antigravity 跟着一起退出；
+        #   3. 反过来，程序执行完退出后窗口也不关（控制台还被 Antigravity 占着），
+        #      看起来就像"输 0 没反应、关不掉"。
+        # 解法：DETACHED_PROCESS 让它彻底脱离当前控制台，三路标准流全部指向 NUL，
+        #      再配 CREATE_NEW_PROCESS_GROUP 免得 Ctrl+C 波及到它。
+        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        try:
+            p = subprocess.Popen(
+                [exe], cwd=os.path.dirname(exe),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True, creationflags=flags)
+        except Exception:
+            # 极端情况（沙箱/权限拦截）退回老办法：能启动就行，代价是日志会打到本窗口
             try:
                 os.startfile(exe)  # noqa
-                log("已启动 Antigravity", ok=True)
-            except Exception as e:
-                log(f"启动失败：{e}（可手动打开）", warn=True)
+                log("已启动 Antigravity（兼容模式：它的日志可能会刷在本窗口）", ok=True)
+            except Exception as e2:
+                log(f"启动失败：{e2}（可手动打开）", warn=True)
+            return
+        time.sleep(0.8)
+        if p.poll() is not None:
+            log("启动失败：进程立刻退出了（可手动双击 Antigravity 试一次）", warn=True)
+            return
+        log("已启动 Antigravity（独立进程，关掉本窗口不会影响它）", ok=True)
         return
     if IS_MAC:
         bundle = find_app_bundle(resources_dir) or "/Applications/Antigravity.app"
@@ -1781,13 +1822,300 @@ def cmd_chinese_output(auto_yes=False):
 
 
 # ----------------------------------------------------------------------------
+# 检查更新
+# ----------------------------------------------------------------------------
+# 设计边界（改这里前请先读）：
+#   1. 全程序唯一的联网入口。只有用户主动点「检查更新」才会发请求，
+#      汉化 / 还原 / 状态 / AI 中文化 全程零网络行为，这是本工具的核心承诺。
+#   2. 只读取 Release 元数据，不下载执行任何远端代码；
+#      下载也只落一个 zip 到桌面，绝不自动替换自身文件。
+#   3. 任何网络异常都必须静默降级成一句话，绝不能甩堆栈、绝不能卡住主流程。
+def _safe_text(s):
+    """远端文本可能带 emoji，GBK 终端直接打印会崩；这里按终端能力降级。"""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return s.encode(enc, "replace").decode(enc, "replace")
+    except (UnicodeEncodeError, LookupError, UnicodeDecodeError):
+        return "".join(ch if ord(ch) < 128 else "?" for ch in s)
+
+
+def _parse_ver(tag):
+    """'v1.9.2' / '1.10.0-rc1' -> (1, 9, 2)；解析不了返回 None。"""
+    s = (tag or "").strip().lstrip("vV")
+    if not s:
+        return None
+    out = []
+    for seg in s.split("."):
+        m = re.match(r"^\d+", seg)
+        if not m:
+            return None
+        out.append(int(m.group(0)))
+    return tuple(out) if out else None
+
+
+def _ver_cmp(a, b):
+    """逐位比数字段，位数不同补 0。必须这么比：字符串比会让 1.10 < 1.9。"""
+    n = max(len(a), len(b))
+    a = a + (0,) * (n - len(a))
+    b = b + (0,) * (n - len(b))
+    return (a > b) - (a < b)
+
+
+def _brief_err(e):
+    """把网络异常压成一句人话"""
+    if isinstance(e, urllib.error.HTTPError):
+        code = getattr(e, "code", "?")
+        if code == 403:
+            return "GitHub 接口限流了（同一网络一小时最多 60 次）"
+        return f"GitHub 返回 {code}"
+    if isinstance(e, urllib.error.URLError):
+        return f"连不上 GitHub（{e.reason}）"
+    low = str(e).lower()
+    if "timed out" in low or "timeout" in low:
+        return "连接超时"
+    return type(e).__name__
+
+
+def _http_get(url, timeout, binary=False):
+    """发一个 GET，不带任何本机信息（只有 UA，用于满足 GitHub 的接口要求）"""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": f"Antigravity-YiJianHanHua/{TOOL_VERSION}",
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    return raw if binary else json.loads(raw.decode("utf-8", "replace"))
+
+
+def _pick_zip(assets):
+    """按当前系统挑对应的 zip（包命名：...-windows-vX.Y.zip / ...-mac-vX.Y.zip）"""
+    key = "mac" if IS_MAC else "windows"
+    for a in assets or []:
+        name = (a.get("name") or "").lower()
+        if name.endswith(".zip") and key in name and a.get("browser_download_url"):
+            return a
+    return None
+
+
+def _pick_sums(assets):
+    for a in assets or []:
+        if (a.get("name") or "").strip().lower() == "sha256sums.txt" and a.get("browser_download_url"):
+            return a
+    return None
+
+
+def _desktop_dir():
+    """找桌面目录，找不到返回 None（调用方回退到脚本目录）"""
+    home = os.path.expanduser("~")
+    cands = [os.path.join(home, "Desktop")]
+    if IS_WIN:
+        cands.append(os.path.join(os.environ.get("USERPROFILE", home), "Desktop"))
+        cands.append(os.path.join(home, "OneDrive", "Desktop"))
+    for p in cands:
+        if os.path.isdir(p):
+            return p
+    return None
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _discard(tmp):
+    try:
+        if os.path.isfile(tmp):
+            os.remove(tmp)
+    except OSError:
+        pass
+
+
+def _unique_path(path):
+    """目标已存在就自动改名，绝不静默覆盖用户已有的文件"""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    for i in range(1, 100):
+        cand = f"{base}({i}){ext}"
+        if not os.path.exists(cand):
+            return cand
+    return path
+
+
+def _download_to(url, dest, expect_size=0):
+    """分块下载 + 进度显示；失败清掉半成品。返回 (ok, err)"""
+    tmp = dest + ".part"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": f"Antigravity-YiJianHanHua/{TOOL_VERSION}",
+        })
+        got = 0
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp, open(tmp, "wb") as f:
+            while True:
+                chunk = resp.read(DL_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if expect_size:
+                    pct = min(100, got * 100 // expect_size)
+                    print(f"\r  下载中 {pct}%（{got // 1024} KB / {expect_size // 1024} KB）   ",
+                          end="", flush=True)
+                else:
+                    print(f"\r  下载中 {got // 1024} KB   ", end="", flush=True)
+        print("", flush=True)
+        os.replace(tmp, dest)
+        return True, None
+    except KeyboardInterrupt:
+        # 用户中途按 Ctrl+C：必须清掉半成品，否则下次会留一个 .part 垃圾文件
+        print("", flush=True)
+        _discard(tmp)
+        return False, "已取消"
+    except Exception as e:
+        _discard(tmp)
+        return False, _brief_err(e)
+
+
+def cmd_check_update(auto_yes=False):
+    """检查 GitHub 上的最新版本；只提示 / 下载到桌面，绝不自动替换自身文件。"""
+    print("=" * 62)
+    print("  检查更新")
+    print("=" * 62)
+    print(f"  当前版本：{TOOL_VERSION}")
+    print(f"  正在查询 GitHub Release（最多等 {UPDATE_TIMEOUT} 秒）...")
+    try:
+        data = _http_get(UPDATE_API, UPDATE_TIMEOUT)
+    except Exception as e:
+        log(f"暂时没查到：{_brief_err(e)}", warn=True)
+        print("-" * 62)
+        print("  这不影响汉化功能。你也可以自己打开这里看最新版：")
+        print(f"  {UPDATE_PAGE}")
+        return
+
+    tag = _safe_text(data.get("tag_name") or "")
+    page = data.get("html_url") or UPDATE_PAGE
+    cur = _parse_ver(TOOL_VERSION)
+    new = _parse_ver(tag)
+    if cur is None or new is None:
+        log(f"版本号无法自动比较（本地 {TOOL_VERSION} / 远端 {tag or '空'}）", warn=True)
+        print(f"  发布页：{page}")
+        return
+    if _ver_cmp(new, cur) <= 0:
+        log(f"已是最新版本（{TOOL_VERSION}）", ok=True)
+        return
+
+    assets = data.get("assets") or []
+    zip_asset = _pick_zip(assets)
+    print("-" * 62)
+    log(f"发现新版本：{tag}（当前 {TOOL_VERSION}）", ok=True)
+    pub = (data.get("published_at") or "")[:10]
+    if pub:
+        print(f"  发布时间：{pub}")
+    if zip_asset:
+        print(f"  适用包：{_safe_text(zip_asset['name'])}"
+              f"（{(zip_asset.get('size') or 0) / 1048576:.2f} MB）")
+    print("-" * 62)
+
+    body = (data.get("body") or "").strip()
+    if body:
+        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+        print("  更新说明（摘要）：")
+        for ln in lines[:12]:
+            t = _safe_text(ln)
+            print("    " + (t[:70] + "..." if len(t) > 70 else t))
+        if len(lines) > 12:
+            print(f"    ...（共 {len(lines)} 行，完整内容见发布页）")
+    print("-" * 62)
+    print("  本工具不会自动替换自己的文件 —— 下载后由你决定怎么换。")
+
+    if not zip_asset:
+        print("  没找到适用于当前系统的安装包，请到发布页手动选择：")
+        print(f"  {page}")
+        return
+
+    print("  [1] 下载到桌面（下载完你自己解压替换）")
+    print("  [2] 只要下载链接（自己用浏览器或下载工具下）")
+    print("  [0] 取消")
+    if auto_yes:
+        ans = "1"
+    else:
+        try:
+            ans = input("请选择：").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+    if ans == "0":
+        print("已取消。")
+        return
+    if ans == "2":
+        print(f"  下载链接：{zip_asset['browser_download_url']}")
+        print(f"  发布页：{page}")
+        return
+    if ans != "1":
+        print("  输入无效，已取消。")
+        return
+
+    dest_dir = _desktop_dir() or SCRIPT_DIR
+    dest = _unique_path(os.path.join(dest_dir, zip_asset["name"]))
+    if os.path.exists(os.path.join(dest_dir, zip_asset["name"])):
+        print("  桌面上已经有同名文件了，这次存成另一个名字，不会覆盖你原来的：")
+    print(f"  下载到：{dest}")
+    ok, err = _download_to(zip_asset["browser_download_url"], dest, zip_asset.get("size") or 0)
+    if not ok:
+        log(f"下载失败：{err}", warn=True)
+        print("  下不动的时候建议自己去浏览器下载：")
+        print(f"  {zip_asset['browser_download_url']}")
+        return
+    log("下载完成", ok=True)
+
+    digest = _sha256_file(dest)
+    print(f"  文件 SHA256：{digest}")
+    sums = _pick_sums(assets)
+    if sums:
+        try:
+            txt = _http_get(sums["browser_download_url"], UPDATE_TIMEOUT, binary=True)
+            expect = None
+            for ln in txt.decode("utf-8", "replace").splitlines():
+                parts = ln.split()
+                if len(parts) >= 2 and os.path.basename(parts[-1]) == zip_asset["name"]:
+                    expect = parts[0].strip().lower()
+                    break
+            if expect is None:
+                log("校验文件里没有本包的记录，跳过校验", warn=True)
+            elif expect == digest:
+                log("SHA256 校验通过", ok=True)
+            else:
+                log("SHA256 校验不通过！文件可能不完整或被掉包，请勿使用", warn=True)
+                print(f"  期望：{expect}")
+                print(f"  实际：{digest}")
+                return
+        except Exception as e:
+            log(f"校验文件下载失败（{_brief_err(e)}），跳过校验", warn=True)
+    else:
+        log("该 Release 未附带 SHA256SUMS.txt，跳过校验", warn=True)
+
+    print("-" * 62)
+    print(f"  已保存到：{dest}")
+    print("  下一步：先退出本程序，再解压这个 zip，把里面的文件覆盖到你现在的目录，")
+    print("  然后重新运行。正在运行时替换文件会让当前窗口读错，顺序别反。")
+
+
+# ----------------------------------------------------------------------------
 # 入口
 # ----------------------------------------------------------------------------
 def menu_pause():
-    """操作结束后停一下让用户看结果；回车回主菜单，窗口不会关闭。"""
+    """操作结束后停一下让用户看结果；回车回主菜单，输入 0 直接退出本程序。
+
+    注意：这里以前只把输入丢掉、不判断内容，导致提示写着"输入 0 可退出"但输 0 照样
+    回主菜单，用户以为程序卡住了。现在真按提示执行。
+    """
     try:
-        input("\n  按回车返回主菜单（输入 0 可退出，或直接关窗口）...")
+        ans = input("\n  按回车返回主菜单（输入 0 直接退出）...").strip()
     except (EOFError, KeyboardInterrupt):
+        raise SystemExit(0)
+    if ans == "0":
         raise SystemExit(0)
 
 
@@ -1802,6 +2130,12 @@ def main():
         args = [a for a in args if a != "--path" and a != path_override]
 
     cmd = args[0] if args else ""
+
+    # 检查更新不依赖 Antigravity 是否安装：没装软件的人也要能查新版本
+    if cmd in ("update", "check-update", "u", "5"):
+        cmd_check_update(auto_yes)
+        return
+
     resources = find_resources(path_override)
 
     if cmd in ("apply", "a", "1"):
@@ -1831,6 +2165,7 @@ def main():
             print("  [2] 恢复官方英文原版")
             print("  [3] 查看状态")
             print("  [4] AI 回复中文化（让 AI 用中文回答，可开可关）")
+            print("  [5] 检查更新（查 GitHub 上有没有新版本）")
             print("  [0] 退出")
             print("  （每个操作做完会回到本菜单，可以接着做下一件事）")
             if IS_MAC:
@@ -1864,9 +2199,13 @@ def main():
                 cmd_chinese_output()
                 menu_pause()
                 continue
+            if c == "5":
+                cmd_check_update()
+                menu_pause()
+                continue
             if c == "0":
                 return
-            print("\n  输入无效，请重新选择（1 / 2 / 3 / 4 / 0）。")
+            print("\n  输入无效，请重新选择（1 / 2 / 3 / 4 / 5 / 0）。")
     else:
         print(__doc__)
 
