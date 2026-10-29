@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.8（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.9（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -93,8 +93,8 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.8"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.27.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0）
+TOOL_VERSION = "v1.9"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.28.1"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
 # --- 检查更新（全程序唯一的联网入口，仅当用户主动点「检查更新」才会触发）---
@@ -348,17 +348,90 @@ def check_env():
     return npx
 
 
-def asar_run(npx, *args, timeout=300):
-    """调用官方 @electron/asar 工具（参数列表形式，无 shell 拼接，防注入）"""
+class AsarToolError(Exception):
+    """asar 工具执行失败。soft 模式下抛出，交给调用方决定是降级还是中止。"""
+
+
+def asar_run(npx, *args, timeout=300, soft=False):
+    """调用官方 @electron/asar 工具（参数列表形式，无 shell 拼接，防注入）
+
+    soft=True：失败抛 AsarToolError 而不是直接退出，供调用方降级。
+    """
     cmd = [npx, "--yes", "@electron/asar"] + [str(a) for a in args]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            encoding='utf-8', errors='replace')
     except subprocess.TimeoutExpired:
+        if soft:
+            raise AsarToolError("asar 工具执行超时")
         die("asar 工具执行超时（网络下载依赖可能过慢），请重试")
     if r.returncode != 0:
-        die(f"asar 工具执行失败：{' '.join(cmd[:5])}...\n{r.stderr[-800:] or r.stdout[-800:]}")
+        msg = f"asar 工具执行失败：{' '.join(cmd[:5])}...\n{r.stderr[-800:] or r.stdout[-800:]}"
+        if soft:
+            raise AsarToolError(msg)
+        die(msg)
     return r.stdout
+
+
+def asar_extract_py(asar_path, out_dir):
+    """纯 Python 解包 app.asar（官方工具失败时的回退方案）。
+
+    为什么需要它：@electron/asar 的 extract 是"一个坏条目带走全部"——
+    header 里声明为 unpacked、但 app.asar.unpacked 下实际缺少该文件时，
+    它会直接抛错退出，前面已解出的内容全部作废。
+    Antigravity 2.28.1 就有这种条目（chrome-devtools-mcp 漏了 1 个 .md），
+    1085 个条目里坏 1 个，官方包自身的问题，不是汉化造成的。
+
+    这里逐条处理：缺失的外部文件跳过并记录，不阻塞汉化。
+    跳过意味着重打包后该条目消失——与官方包"实际读不到"的状态一致，不影响运行。
+
+    返回 (解出文件数, 跳过的相对路径列表)
+    """
+    import struct as _struct
+    f = open(asar_path, 'rb')
+    try:
+        head = f.read(16)
+        if len(head) < 16:
+            die("app.asar 头部异常，文件可能已损坏")
+        header_size, = _struct.unpack('<I', head[8:12])
+        header_str_size, = _struct.unpack('<I', head[12:16])
+        f.seek(16)
+        header = json.loads(f.read(header_str_size).decode('utf-8'))
+        base = 12 + header_size
+        unpacked_dir = asar_path + ".unpacked"
+        counter = [0]
+        skipped = []
+
+        def walk(node, prefix):
+            for name, entry in node.get('files', {}).items():
+                rel = os.path.join(prefix, name) if prefix else name
+                if 'files' in entry:
+                    os.makedirs(os.path.join(out_dir, rel), exist_ok=True)
+                    walk(entry, rel)
+                    continue
+                if 'link' in entry:
+                    # 符号链接：Windows 创建需特权，且官方包当前不含此类条目，直接跳过
+                    continue
+                dest = os.path.join(out_dir, rel)
+                parent = os.path.dirname(dest)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                if entry.get('unpacked'):
+                    src = os.path.join(unpacked_dir, rel)
+                    if not os.path.isfile(src):
+                        skipped.append(rel.replace(os.sep, '/'))
+                        continue
+                    shutil.copy2(src, dest)
+                else:
+                    f.seek(base + int(entry['offset']))
+                    with open(dest, 'wb') as out:
+                        out.write(f.read(entry['size']))
+                counter[0] += 1
+
+        walk(header, '')
+        return counter[0], skipped
+    finally:
+        f.close()
 
 
 def node_check(files):
@@ -1518,7 +1591,19 @@ def cmd_apply(resources, npx, auto_yes=False):
     atexit.register(_cleanup_work)
     extract_dir = os.path.join(work, "x")
     log("正在解包 app.asar ...")
-    asar_run(npx, "extract", asar, extract_dir)
+    skipped_unpacked = []
+    try:
+        asar_run(npx, "extract", asar, extract_dir, soft=True)
+    except AsarToolError:
+        # 官方包存在「header 声明 unpacked、但 app.asar.unpacked 下缺该文件」的坏条目时，
+        # @electron/asar 会整体报错退出。退回内置解包器，逐条处理、跳过缺失项。
+        log("官方 asar 工具解包失败，改用内置解包器处理", warn=True)
+        n_files, skipped_unpacked = asar_extract_py(asar, extract_dir)
+        log(f"内置解包器完成：{n_files} 个文件", ok=True)
+        if skipped_unpacked:
+            log(f"跳过 {len(skipped_unpacked)} 个官方包自身缺失的外部文件（与汉化无关，不影响使用）：", warn=True)
+            for _s in skipped_unpacked[:5]:
+                log(f"    {_s}", warn=True)
     ver = get_asar_version(extract_dir)
     log(f"检测到 Antigravity 版本：v{ver}", ok=True)
     # 身份守卫：确认这是 Antigravity 的程序包（防止 --path 指错目录误伤其他软件）
@@ -1555,6 +1640,23 @@ def cmd_apply(resources, npx, auto_yes=False):
     bak = asar + ".bak"
     ref_asar = bak if (os.path.isfile(bak) and not asar_is_localized(bak)) else asar
     official_unpacked = get_unpacked_set(ref_asar)
+    # 参照包里「索引声明为 unpacked、但外部文件实际不存在」的条目，本来就读不到，
+    # 不能算成打包遗漏——否则 2.28.1 那种官方漏文件会让结构守卫误报中止。
+    #
+    # 两个坑（都实测踩过，别改回去）：
+    # 1) 外部文件统一放在**当前** asar 的 .unpacked 目录里，`.bak` 没有配套的
+    #    `app.asar.bak.unpacked`。所以判断实际存在性必须用 asar + ".unpacked"，
+    #    不能拿 ref_asar 拼路径，否则会全部判为"缺失"、把守卫变成空壳。
+    # 2) 不能只依赖 skipped_unpacked：从「已汉化 asar」出发时，包本身不含坏条目，
+    #    官方工具能正常解包，skipped_unpacked 为空，但参照包（.bak 官方原版）里
+    #    仍然有那条缺失项 → 守卫误报。必须独立按实际文件存在性判定。
+    _udir = asar + ".unpacked"
+    if official_unpacked and os.path.isdir(_udir):
+        absent = {p for p in official_unpacked
+                  if not os.path.isfile(os.path.join(_udir, p.replace('/', os.sep)))}
+        if absent:
+            official_unpacked -= absent
+            log(f"参照包有 {len(absent)} 个外部文件实际不存在（官方包自身问题），已从结构守卫排除", warn=True)
     unpack_pattern, _ = derive_unpack_pattern(ref_asar)
     log("正在重新打包 app.asar ..."
         + (f"（外部目录模式：{unpack_pattern}）" if unpack_pattern else "（无外部目录）"))
