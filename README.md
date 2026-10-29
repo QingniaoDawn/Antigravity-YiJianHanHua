@@ -1,7 +1,7 @@
 # Antigravity 一键汉化
 
 > Google Antigravity（Agentic IDE）**Windows / macOS** 一键汉化工具
-> **19703 翻译单元 · 双击即用 · 汉化零联网（唯一联网：手动检查更新）· 永久免费**
+> **19800 翻译单元 · 双击即用 · 汉化零联网（唯一联网：手动检查更新）· 永久免费**
 
 ---
 
@@ -31,7 +31,7 @@
 
 | 优势 | 说明 |
 |---|---|
-| **词条量天花板** | 19703 翻译单元（主词典 19363 + 前缀规则 88 + 核心词 117 + 动态正则 61 + 菜单映射 74），规模远超目前市面上的同类汉化方案 |
+| **词条量天花板** | 19800 翻译单元（主词典 19460 + 前缀规则 88 + 核心词 117 + 动态正则 61 + 菜单映射 74），规模远超目前市面上的同类汉化方案 |
 | **覆盖最全面** | 不只翻网页界面——原生菜单栏、系统托盘、系统弹窗、安装向导、权限确认弹窗、输入框提示、IDE 面板词条，全都翻 |
 | **双平台** | Windows 与 macOS 同一套脚本自动适配；macOS 版自动完成代码签名重签（Apple 官方推荐的分层方式） |
 | **真·一键** | 双击 → 数字菜单 → 完成。杀进程、备份、注入、校验、部署全自动，不需要敲任何命令 |
@@ -115,11 +115,12 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 
 ### 版本适配
 
-当前深度适配 **Antigravity v2.27.0**（Windows 真机验证）。
+当前深度适配 **Antigravity v2.28.1**（Windows 真机验证）。
 
 | 版本 | 状态 |
 |---|---|
-| v2.27.0 | ✅ **当前基线**，深度适配：24 处静态锚点全部命中，注入 10 个文件语法门禁通过；<br>新增 231 条文案（云端工作区、实时语音通话、应用连接、账号切换、远程控制实例等） |
+| v2.28.1 | ✅ **当前基线**，深度适配：24 处静态锚点全部命中，注入 10 个文件语法门禁通过；<br>连同 2.28.0 一起补齐 97 条文案（内置浏览器、PDF 查看器、任意类型附件、快捷键管理、云端项目与 GitHub 集成、对话导航器） |
+| v2.27.0 | ✅ 上一基线，24 处静态锚点全部命中，真机实测通过；<br>收录该版新增 231 条文案（云端工作区、实时语音通话、应用连接、账号切换、远程控制实例等） |
 | v2.25.0 | ✅ 上一基线，20 处静态锚点 + 3 处挂钩点全部命中，真机实测通过；<br>收录该版新增 31 条 + 中英混杂修复 13 条 + **存量公开文案补全 136 条** |
 | v2.24.0 | ✅ 深度适配通过（上一基线，20 处锚点 + 3 处挂钩全部命中）；收录该版新增 97 条 + 历史补漏 1 条 |
 | v2.23.1 | ✅ 深度适配通过（更早基线，20 处锚点 + 3 处挂钩全部命中） |
@@ -131,7 +132,47 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 界面翻译采用**运行时 DOM 文本匹配**，不修改官方界面文件本身。
 因此官方更新不会破坏已有汉化，只可能新增少量未收录的新文案。
 
-**v2.27.0 新增内容的处理**：这一版跨度较大，界面新增了一整批功能，对应文案全部补齐（231 条）：
+**v2.28.1 新增内容的处理**：这次跨了两个版本（2.27.0 → 2.28.0 → 2.28.1），共补 97 条文案：
+
+- **内置浏览器**（2.28.0 的头号功能）：`Built-in Browser` / `External Browser` / `Side Panel` / `Side Panel Preview`、
+  `Open Links In` / `Open in` / `Open in Side Panel`、地址栏安全指示 `Not secure` / `Your connection to this site is not secure`、
+  证书面板 `Certificate details` / `Certificate is valid` / `Issued by` / `The certificate has been revoked.`、
+  `View site information`，以及设置页的两段说明文字。
+- **PDF 查看器与附件**：`File size exceeds 20MB limit` / `Failed to attach file`。
+- **快捷键管理**：`Add Shortcut` / `Edit Shortcut` / `Remove Shortcut` / `Reset All to Defaults`、
+  `Search shortcuts...` / `Press keys...` / `No keyboard shortcuts found matching your filter.`、
+  `Middle Click`、浏览器标签页占用快捷键的提示。
+- **对话导航与标签页**：`Move Conversation Up` / `Move Conversation Down` / `Open Conversation in New Tab` / `Reopen Closed Tab`。
+- **云端项目与 GitHub 集成**：`Cloud Projects` / `Cloud only` / `Local only` / `Local Checkout`、
+  `Connect GitHub…` / `Loading repositories…` / `No repositories found` / `Requires a GitHub repository`、
+  `Worktree Branches` / `View Branches` / `Not cloned locally`。
+- **数据删除**：`Remote Agents Data` / `Delete All Data` / `Delete All Remote Agents Data?` 及整段说明。
+- **插件与市场**：`More Plugins` / `Permission Details` / `Website` / `Sign in needed`、`Explore other marketplace customizations`。
+- **主题与字体**：`Enable New Themes` 及两项实验性外观设置说明。
+- **对话状态**：`Waiting for your approval`。
+
+主词典由 19363 条增至 **19460 条**（词典版本 1.9.0）。本次一起做了四件事：
+
+1. **修掉一个会让汉化直接失败的官方包问题**：2.28.1 的 `app.asar` 索引里声明
+   `node_modules/chrome-devtools-mcp/.../selectElementAccessibility…Descendant.md` 是外部文件（unpacked），
+   但 `app.asar.unpacked` 目录下实际没有这个文件——官方打包漏了一个（1085 个条目里坏 1 个）。
+   标准 asar 工具遇到「索引里有、文件却没有」的条目会整体报错退出，汉化在解包阶段就中止。
+   现在工具内置了一个容错解包器：官方工具失败时自动接管，逐条处理、跳过缺失项并明确提示。
+   跳过的文件本来就读不到，跳过不改变运行行为。
+   打包后的完整性守卫也同步排除这 1 个条目——否则**「再跑一次汉化」会误报中止**
+   （参照官方备份时发现缺这一项）。这个坑是实测踩到才发现的，两条入口都验证过：
+   从官方原版跑、从已汉化状态重跑，产物字节完全一致。
+2. **修掉 22 条中英混杂**：核心词表会把没被精确收录的新词逐词硬替换，产出
+   `删除 All Data`、`添加 Shortcut`、`Cloud 项目`、`Empty 日志` 这类半截货，比纯英文更难受。
+   这批全部补了精确词条，实测中英混杂从 49 条降到 9 条（剩下的是 GitHub / Google Sans / Chrome
+   这类专有名词保留，属正常译法）。
+3. **引擎加了技术串保护**（`engine.js` 的核心词分词环节）：原来 `\b` 词边界在 `/` `.` `-` `:` 旁边也算边界，
+   会把 `https://policies.google.com/privacy` 里的词、`show-more` 这类连字符标识符一起替换掉，
+   产出坏 URL 和坏标识符——这比不翻更危险。现在「无空格且含技术符号」的串直接原样返回。
+   用 25006 条样本做新旧引擎对照：**误伤 0 条**，39 条译文由混杂变干净，51 条从不翻变成翻。
+4. **旧词条一律保留，不删**：还在用旧版本的用户不受影响。
+
+**v2.27.0 新增内容的处理（上一版）**：这一版跨度较大，界面新增了一整批功能，对应文案全部补齐（231 条）：
 
 - **云端工作区**：项目文件和对话附件存在 Google 服务器、挂载到云端沙箱、连接 Google Drive / GitHub 资源、
   数据留存与删除说明、`Resume environment` / `Resuming environment…` / `This chat's environment is paused`。
@@ -144,7 +185,7 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 - **过滤与状态**：`Only Archived` / `Only Automations` / `Only Scheduled`、`Toggle Status Bar`、`Fit Mode`。
 - **连接状态**：`Connecting…` / `Still connecting…` / `Reconnecting…` / `reconnecting`。
 
-主词典由 19137 条增至 **19363 条**（词典版本 1.8.0）。同一批还做了四件事：
+上一版主词典由 19137 条增至 19363 条（词典版本 1.8.0）。同一批还做了四件事：
 
 1. **修复启动方式**（用户实测报的问题）：以前选 `Y` 立即启动，Antigravity 会和本工具共用同一个控制台——
    它的日志（DevTools 端口、`wsl.exe` 报错、自动更新）直接刷满窗口，关窗口时还会顺手把 Antigravity 一起关掉，
@@ -162,13 +203,13 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
    缩写类（ID / URL / PID / uv）直接删条目保持英文——中文界面本来也写 ID、URL；
    `App` 则从"应用设置"改正为"应用"。
 
-**这一版的覆盖率是怎么算的（可以自己复核）**：把 2.27.0 的真实界面包逐条提取，
-得到 2417 条候选文案，用内置引擎实跑一遍：**2076 条已翻译（85.9%）**。
-剩下 341 条的构成是——179 条标识符/路径/常量（本来就不是给人看的，含 `ID`/`URL`/`PID`
-这类刻意保持英文的缩写）、46 条 Google 内部工具（Jetski / Cider / CitC，外部账号没有入口）、
-18 条纯符号、14 条 LaTeX 数学渲染配置项、4 条标点开头的拼接碎片、80 条其他
-（内部日志前缀如 `[AppState]`、输入框示例值 `e.g. main,dev or *`、代码示例、模型名
-如 `Flash Lite`、屏幕阅读器 alt 文本、JSON-RPC 协议错误串）。
+**这一版的覆盖率是怎么算的（可以自己复核）**：把 2.28.1 的真实界面包逐条提取，
+得到 2466 条候选文案，用内置引擎实跑一遍：**2123 条已翻译（86.1%）**。
+剩下 343 条的构成是——产品名与厂商名（GitHub、Windows、Linux、macOS、Drive、Google3、Gemini Enterprise）、
+模型名（`Flash Lite` / `Flash` / `Pro`）、内部日志前缀（`[AppState]`、`[TrajectorySummaries]`、
+`[McpServerStates]` 等）、示例占位值（`Workspace_1`、`http://localhost:8080`、`my-gcp-project`）、
+命令标识符（`run_command` / `view_file`）、LaTeX 渲染命令（`\fbox` / `\angl`），
+另有 17 条路径与内部短链、5 条枚举常量、字体名与按键名各 1 条。
 **这些刻意不翻**：翻协议错误串会破坏 MCP 通信，翻示例占位符会误导用户填错值，
 翻模型名会让人认不出是哪个模型，翻 `ID`/`URL` 反而让人看不懂。它们不是"漏掉"，是"不该动"。
 
@@ -187,7 +228,7 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 
 随后又做了一轮**存量补全**：把此前版本一直没收录的 136 条公开界面文案一次补齐
 （插件包管理、账号与登录、工件预览、终端、GitHub 策略、轨迹统计、引导页等），
-v1.7 发布时主词典为 **19137 条**（v1.8 已增至 19363 条，见上）。
+v1.7 发布时主词典为 **19137 条**（v1.8 增至 19363 条、v1.9 增至 19460 条，见上）。
 
 **v1.7 里的一个安全修复**：审计时发现 Antigravity 会把 `aria-label` 当作稳定标识使用
 （例如某个输入框失焦时用 `aria-label === "Cancel"` 判断是否点了「取消」）。
@@ -236,7 +277,7 @@ v1.7 发布时主词典为 **19137 条**（v1.8 已增至 19363 条，见上）�
 | `一键汉化.bat` | Windows 双击入口（自动找 Python） |
 | `localize.py` | 主程序：备份/注入/语法门禁/打包/部署/恢复/防并发/（macOS）代码签名重签 全流水线 |
 | `engine.js` | 界面翻译引擎（注入到 Antigravity 内部运行） |
-| `zh_data.json` | 词典数据（**19703 翻译单元**，想补充词条改这个文件后重跑即可） |
+| `zh_data.json` | 词典数据（**19800 翻译单元**，想补充词条改这个文件后重跑即可） |
 | `mac/一键汉化.command` | macOS 双击入口（自动找 Python3 / Node.js / codesign） |
 | `mac/README.md` | macOS 专属说明与故障排查 |
 | `赞赏码.jpg` | 打赏码（自愿打赏，不影响任何功能） |
