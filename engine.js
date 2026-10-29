@@ -1,12 +1,13 @@
 // =============================================================================
-// Antigravity 一键汉化引擎 v1.8
+// Antigravity 一键汉化引擎 v1.9
 // 设计要点：
 //   - 纯 Web API（无 require/network），preload 沙箱环境可用
 //   - 多级瀑布翻译管道 + O(1) 缓存
 //   - 输入框/代码区/思考链物理隔离（最全防护集）
 //   - 微任务批量调度 + 防重入锁 + 熔断器（杜绝 CPU 风暴）
 //   - Shadow DOM 穿透 + SPA 路由 + 焦点恢复全生命周期兜底
-//   - 不修改任何全局原型
+//   - 改写宿主全局 API 的每一处都包 try/catch：引擎自身出错绝不允许外溢成
+//     宿主的故障（这是 v1.9 修的关键点，见 attachShadow / title / observer 回调）
 // =============================================================================
 ;(function () {
     'use strict';
@@ -467,13 +468,19 @@
         });
     }
 
+    // 观察器挂载。**内部整体包 try/catch**：本函数有 6 个调用点，
+    // 其中 attachShadow 包装和 MutationObserver 回调都在宿主关键路径上，
+    // 一旦 observe 抛异常（root 异常、配额耗尽等）会外溢成宿主故障。
+    // 在这里一次性兜住，比逐个调用点加保护更可靠。
     function observeRoot(root) {
-        if (!root || observedRoots.has(root)) return;
-        observedRoots.add(root);
-        var ob = makeObserver();
-        ob.observe(root, OBSERVER_CONFIG);
-        observers.push({ ob: ob, root: root });
-        if (observers.length > 60) observers.shift(); // 有界观察器列表
+        try {
+            if (!root || observedRoots.has(root)) return;
+            observedRoots.add(root);
+            var ob = makeObserver();
+            ob.observe(root, OBSERVER_CONFIG);
+            observers.push({ ob: ob, root: root });
+            if (observers.length > 60) observers.shift(); // 有界观察器列表
+        } catch (_) { /* 观察失败只影响汉化覆盖度，不影响宿主 */ }
     }
 
     function disconnectAll() {
@@ -493,17 +500,24 @@
         }
     }
 
-    // Shadow DOM 穿透：未来新建的 shadow root 自动纳管
+    // Shadow DOM 穿透：未来新建的 shadow root 自动纳管。
+    // 这是**宿主关键路径**：attachShadow 被 React 等框架大量调用，
+    // 一旦 observeRoot 抛异常，异常会替代正常返回值冒到调用方，
+    // 导致组件渲染失败（表现为白屏或局部功能失灵）。
+    // 所以这里必须吞掉自身异常，绝不能让汉化把宿主带崩。
     try {
         var origAttachShadow = Element.prototype.attachShadow;
         Element.prototype.attachShadow = function () {
             var sr = origAttachShadow.apply(this, arguments);
-            observeRoot(sr);
+            try { observeRoot(sr); } catch (_) { /* 引擎故障不外溢 */ }
             return sr;
         };
     } catch (_) {}
 
-    // 窗口标题翻译（"Antigravity - xxx" → 中文）
+    // 窗口标题翻译（"Antigravity - xxx" → 中文）。
+    // 同样是宿主关键路径：任何代码设 document.title 都会走这里，
+    // 翻译抛异常就会让"设标题"这个动作整个失败。失败时降级为写原值，
+    // 保证宿主行为不受影响——宁可标题是英文，也不能让宿主报错。
     try {
         var titleDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'title') ||
             Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'title');
@@ -512,7 +526,11 @@
             Object.defineProperty(document, 'title', {
                 configurable: true, enumerable: true,
                 get: function () { return titleDesc.get.call(document); },
-                set: function (val) { origTitleSet.call(document, translateString(val)); }
+                set: function (val) {
+                    var out = val;
+                    try { out = translateString(val); } catch (_) { out = val; }
+                    origTitleSet.call(document, out);
+                }
             });
         }
     } catch (_) {}
@@ -553,7 +571,7 @@
 
     // 调试句柄（F12 控制台可用 window.__AGY_ZH_DEBUG__.stats() 查看运行状态）
     window.__AGY_ZH_DEBUG__ = {
-        version: '1.4.0',
+        version: '1.9.0',
         stats: function () {
             return {
                 active: true,
