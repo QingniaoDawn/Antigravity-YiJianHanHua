@@ -385,7 +385,7 @@ def asar_extract_py(asar_path, out_dir):
     这里逐条处理：缺失的外部文件跳过并记录，不阻塞汉化。
     跳过意味着重打包后该条目消失——与官方包"实际读不到"的状态一致，不影响运行。
 
-    返回 (解出文件数, 跳过的相对路径列表)
+    返回 (解出文件数, 跳过的相对路径列表, 跳过的符号链接列表)
     """
     import struct as _struct
     f = open(asar_path, 'rb')
@@ -393,14 +393,23 @@ def asar_extract_py(asar_path, out_dir):
         head = f.read(16)
         if len(head) < 16:
             die("app.asar 头部异常，文件可能已损坏")
-        header_size, = _struct.unpack('<I', head[8:12])
-        header_str_size, = _struct.unpack('<I', head[12:16])
+        # 与 read_asar_header 保持同一套校验：magic 必须是 4。
+        # 少了这道校验，把非 asar 文件喂进来会解析出垃圾目录树然后继续跑，
+        # 最后在别处以莫名其妙的方式失败。
+        #
+        # 四个 UInt32 的含义（别搞混，搞混一次就白解包）：
+        #   [0:4]  magic（固定 4）  [4:8]  size  [8:12] header_size  [12:16] header_str_size
+        # 数据区起点 base = 12 + header_size（用的是**第 3 个**，不是第 2 个）。
+        magic, _size, header_size, header_str_size = _struct.unpack('<4I', head)
+        if magic != 4:
+            die("app.asar 头部 magic 异常（不是标准 asar 文件），已停止解包")
         f.seek(16)
         header = json.loads(f.read(header_str_size).decode('utf-8'))
         base = 12 + header_size
         unpacked_dir = asar_path + ".unpacked"
         counter = [0]
         skipped = []
+        links = []
 
         def walk(node, prefix):
             for name, entry in node.get('files', {}).items():
@@ -410,26 +419,38 @@ def asar_extract_py(asar_path, out_dir):
                     walk(entry, rel)
                     continue
                 if 'link' in entry:
-                    # 符号链接：Windows 创建需特权，且官方包当前不含此类条目，直接跳过
+                    # 符号链接：Windows 创建需特权，官方包当前不含此类条目。
+                    # 不静默丢弃——记下来由调用方提示，否则重打包后链接会无声消失。
+                    links.append(rel.replace(os.sep, '/'))
                     continue
                 dest = os.path.join(out_dir, rel)
                 parent = os.path.dirname(dest)
                 if parent:
                     os.makedirs(parent, exist_ok=True)
                 if entry.get('unpacked'):
+                    # 注意顺序：unpacked 条目在 header 里**没有 offset 字段**
+                    # （它们在 asar 里只占一个索引位，真正内容在 .unpacked 目录）。
+                    # 所以必须先用 unpacked 分流，再谈 offset，否则会把所有外部文件
+                    # 当成"无 offset 异常"全跳掉——这个顺序错过一次，
+                    # 表现是只解出 738 个文件、连 package.json 都没有。
                     src = os.path.join(unpacked_dir, rel)
                     if not os.path.isfile(src):
                         skipped.append(rel.replace(os.sep, '/'))
                         continue
                     shutil.copy2(src, dest)
-                else:
+                elif 'offset' in entry:
                     f.seek(base + int(entry['offset']))
                     with open(dest, 'wb') as out:
                         out.write(f.read(entry['size']))
+                else:
+                    # 既不是目录、链接、unpacked，也没有 offset：未知条目类型。
+                    # 记录下来跳过，别让 entry['offset'] 抛 KeyError 把整个流程带崩。
+                    skipped.append(rel.replace(os.sep, '/') + '（无 offset 字段）')
+                    continue
                 counter[0] += 1
 
         walk(header, '')
-        return counter[0], skipped
+        return counter[0], skipped, links
     finally:
         f.close()
 
@@ -1592,18 +1613,24 @@ def cmd_apply(resources, npx, auto_yes=False):
     extract_dir = os.path.join(work, "x")
     log("正在解包 app.asar ...")
     skipped_unpacked = []
+    skipped_links = []
     try:
         asar_run(npx, "extract", asar, extract_dir, soft=True)
     except AsarToolError:
         # 官方包存在「header 声明 unpacked、但 app.asar.unpacked 下缺该文件」的坏条目时，
         # @electron/asar 会整体报错退出。退回内置解包器，逐条处理、跳过缺失项。
         log("官方 asar 工具解包失败，改用内置解包器处理", warn=True)
-        n_files, skipped_unpacked = asar_extract_py(asar, extract_dir)
+        n_files, skipped_unpacked, skipped_links = asar_extract_py(asar, extract_dir)
         log(f"内置解包器完成：{n_files} 个文件", ok=True)
         if skipped_unpacked:
-            log(f"跳过 {len(skipped_unpacked)} 个官方包自身缺失的外部文件（与汉化无关，不影响使用）：", warn=True)
+            log(f"跳过 {len(skipped_unpacked)} 个官方包自身缺失/异常的条目（与汉化无关，不影响使用）：", warn=True)
             for _s in skipped_unpacked[:5]:
                 log(f"    {_s}", warn=True)
+        if skipped_links:
+            log(f"跳过 {len(skipped_links)} 个符号链接（Windows 无法重建，重打包后会消失）：", warn=True)
+            for _s in skipped_links[:5]:
+                log(f"    {_s}", warn=True)
+            log("若汉化后出现异常，请把这段信息反馈给维护者", warn=True)
     ver = get_asar_version(extract_dir)
     log(f"检测到 Antigravity 版本：v{ver}", ok=True)
     # 身份守卫：确认这是 Antigravity 的程序包（防止 --path 指错目录误伤其他软件）
