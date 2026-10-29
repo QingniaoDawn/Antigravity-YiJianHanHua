@@ -558,13 +558,18 @@ def kill_processes(auto=False, resources_dir=None):
         running = [n for n in names if n in r]
         if not running:
             return
-        if not auto:
-            ans = input(f"    检测到 {running} 正在运行，需要关闭才能继续。是否关闭？(Y/n)：")
-            if ans.strip().lower() not in ("", "y", "yes"):
-                die("已取消。请手动退出 Antigravity 后重试。")
-        for n in running:
-            _safe_run(["pkill", "-f", n])
-        return
+        # Linux 等非 Windows / 非 macOS 平台：**不做自动终止**。
+        #
+        # 原因：这里拿不到进程的可执行路径（不像 macOS 那条分支能按 bundle 路径精确过滤），
+        # 只能对 ps 全文做子串匹配；而 `language_server` 是通用名——
+        # 用户很可能同时装了别的编辑器，其语言服务器进程同样含这个字符串，
+        # 一句 `pkill -f language_server` 就会把人家的进程一起杀掉。
+        # 这属于"为了省一步操作而伤害用户环境"，绝不能留。
+        # 宁可让用户手动关闭后重试，也不冒这个险。
+        die("检测到可能相关的进程：" + ", ".join(running) + "\n"
+            "  请手动退出 Antigravity 后重新运行本工具。\n"
+            "  （本工具在 Linux 上不自动结束进程：无法精确区分同名进程，"
+            "以免误杀你其它软件的 language server。）")
 
     # Windows：枚举进程的可执行路径，只处理 Antigravity 目录下的
     marker = (resources_dir or "").replace("/", "\\").lower()
