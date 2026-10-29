@@ -177,6 +177,11 @@
         if (!CJK_RE.test(t) && CORE_UNION) {
             var words = t.split(/\s+/);
             if (words.length <= 3) {
+                // 技术串保护：无空格且含 URL / 路径 / 标识符特征字符时，放弃逐词替换。
+                // 原因：CORE_UNION 用 \b 作词边界，而 \b 在 "/" "." "-" ":" 旁边也算边界，
+                // 于是 "https://policies.google.com/privacy" 里的 privacy、"show-more" 里的
+                // show 都会被替掉，产出坏 URL 和坏标识符——比不翻更危险。整串原样返回。
+                if (words.length === 1 && /[-:/.#_\\@=+]/.test(t)) return t;
                 var rt2 = t.replace(CORE_UNION, function (w) {
                     var v = CORE[w.toLowerCase()];
                     return v || w;
