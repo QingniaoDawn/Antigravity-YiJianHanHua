@@ -24,5 +24,7 @@
 *.dmg text=false
 *.ico text=false
 
-# Windows 的 .bat 保持 CRLF（cmd 对 LF 支持不完整）
-*.bat text eol=crlf
+# Windows 的 .bat 按二进制存：cmd 解析 LF 换行的批处理会出错，
+# 用 `text eol=crlf` 会把仓库内副本归一成 LF（raw 下载/网页查看拿到的是 LF），
+# 改成 -text 后仓库里存的就是 CRLF 字节，clone / Download ZIP / raw 三种途径都是 CRLF。
+*.bat -text
