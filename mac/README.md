@@ -1,6 +1,6 @@
 # Antigravity 一键汉化 · macOS 版
 
-在 Mac 上把 Antigravity 界面完整汉化。**19460+ 词条、汉化零联网、一键还原、双击即用。**
+在 Mac 上把 Antigravity 界面完整汉化。**19605+ 词条、汉化零联网、一键还原、双击即用。**
 
 Windows 用户请用仓库根目录的 `一键汉化.bat`，本目录只服务 macOS。
 

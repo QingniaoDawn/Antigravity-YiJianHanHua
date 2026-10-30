@@ -1,5 +1,5 @@
 // =============================================================================
-// Antigravity 一键汉化引擎 v1.9
+// Antigravity 一键汉化引擎 v1.10
 // 设计要点：
 //   - 纯 Web API（无 require/network），preload 沙箱环境可用
 //   - 多级瀑布翻译管道 + O(1) 缓存
@@ -66,9 +66,54 @@
 
     var CJK_RE = /[\u4e00-\u9fff]/;
     var LETTER_RE = /[a-zA-Z]/;
-    var MONTHS = { Jan: '1月', Feb: '2月', Mar: '3月', Apr: '4月', May: '5月', Jun: '6月',
-        Jul: '7月', Aug: '8月', Sep: '9月', Oct: '10月', Nov: '11月', Dec: '12月' };
-    var MONTH_DATE_RE = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s*(\d{1,2})\b/g;
+    // 英文月份归一化：译文里残留的英文日期要转成中文日期。
+    // v1.10 起支持「完整月份名」与「Month D, YYYY」两种形态——模型公告里
+    // 会出现 "starting on November 2, 2026"，只认 Oct 5 这种缩写会漏。
+    var MONTH_NUM = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+        jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    var MONTH_ALT = '(January|February|March|April|May|June|July|August|September|October|November|December' +
+        '|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)';
+    var DATE_MDY_RE = new RegExp('\\b' + MONTH_ALT + '\\.?\\s+(\\d{1,2}),\\s*(\\d{4})\\b', 'g');
+    var DATE_MD_RE = new RegExp('\\b' + MONTH_ALT + '\\.?\\s+(\\d{1,2})\\b', 'g');
+
+    // 时长归一化：配额提示里的 "3h54m47s" 要变成「3小时54分47秒」。
+    // 只在已含中文的短文本里跑，避免动到代码/标识符。
+    var DUR_RULES = [
+        [/(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s/g, function (m, a, b, c) { return a + '小时' + b + '分' + c + '秒'; }],
+        [/(\d+)\s*h\s*(\d+)\s*m/g, function (m, a, b) { return a + '小时' + b + '分'; }],
+        [/(\d+)\s*m\s*(\d+)\s*s/g, function (m, a, b) { return a + '分' + b + '秒'; }],
+        [/(\d+)\s*h(?![a-z])/gi, function (m, a) { return a + '小时'; }],
+        [/(\d+)\s*m(?![a-z])/gi, function (m, a) { return a + '分'; }],
+        [/(\d+)\s*s(?![a-z])/gi, function (m, a) { return a + '秒'; }]
+    ];
+
+    function normalizeDurations(s) {
+        if (!s || s.length > 120 || !CJK_RE.test(s)) return s;
+        for (var i = 0; i < DUR_RULES.length; i++) {
+            s = s.replace(DUR_RULES[i][0], DUR_RULES[i][1]);
+        }
+        return s;
+    }
+
+    function monthNum(name) {
+        if (!name) return 0;
+        return MONTH_NUM[name.slice(0, 3).toLowerCase()] || 0;
+    }
+
+    // 只在「已经含中文」的译文里做归一：英文原文原样保留，避免把正文里的
+    // 英文日期（例如代码片段 or 产品名）改坏。
+    function normalizeDates(s) {
+        if (!s || s.length > 240 || !CJK_RE.test(s) || !LETTER_RE.test(s)) return s;
+        s = s.replace(DATE_MDY_RE, function (all, mon, day, year) {
+            var n = monthNum(mon);
+            return n ? year + '年' + n + '月' + parseInt(day, 10) + '日' : all;
+        });
+        s = s.replace(DATE_MD_RE, function (all, mon, day) {
+            var n = monthNum(mon);
+            return n ? n + '月' + parseInt(day, 10) + '日' : all;
+        });
+        return s;
+    }
 
     // ---------------- 3. 翻译管道（多级瀑布，逐级短路） ----------------
     function translateString(text) {
@@ -81,7 +126,8 @@
         if (hit !== undefined) return text.replace(trimmed, hit);
 
         var out = pipeline(trimmed);
-        out = normalizeMonths(out);
+        out = normalizeDates(out);
+        out = normalizeDurations(out);
         out = fixMacKeys(out);
         cachePut(trimmed, out);
         return text.replace(trimmed, out);
@@ -183,6 +229,11 @@
                 // 于是 "https://policies.google.com/privacy" 里的 privacy、"show-more" 里的
                 // show 都会被替掉，产出坏 URL 和坏标识符——比不翻更危险。整串原样返回。
                 if (words.length === 1 && /[-:/.#_\\@=+]/.test(t)) return t;
+                // 多词同理：整串里只要夹着 URL / 文件名 / 锚点，逐词替换会改坏链接本身。
+                // 实测 "See [go/jetski-agent-sidecars#trusted-locations](...)" 会把
+                // "jetski-agent" 变成 "jetski-智能体"，链接直接失效。整串原样返回。
+                if (/https?:\/\//i.test(t) || /\bgo\/[\w-]/i.test(t) ||
+                    /#[\w-]{2,}/.test(t) || /[\\/][\w.-]+\.[a-z]{2,4}\b/i.test(t)) return t;
                 var rt2 = t.replace(CORE_UNION, function (w) {
                     var v = CORE[w.toLowerCase()];
                     return v || w;
@@ -191,15 +242,6 @@
             }
         }
         return t; // 未命中：原样返回（缓存为身份映射）
-    }
-
-    function normalizeMonths(s) {
-        // 月份归一化："更新于 Mar月5日" → "更新于 3月5日"；仅处理已含中文的短文本，
-        // 避免误伤正文中合法的英文月份
-        if (s.length > 60 || !CJK_RE.test(s)) return s;
-        return s.replace(MONTH_DATE_RE, function (m, mon, day) {
-            return MONTHS[mon] ? MONTHS[mon] + day + '日' : m;
-        });
     }
 
     function zhPunct(tail) {
@@ -571,7 +613,7 @@
 
     // 调试句柄（F12 控制台可用 window.__AGY_ZH_DEBUG__.stats() 查看运行状态）
     window.__AGY_ZH_DEBUG__ = {
-        version: '1.9.0',
+        version: '1.10.0',
         stats: function () {
             return {
                 active: true,

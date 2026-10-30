@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.9（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.10（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -93,7 +93,7 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.9"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.10"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.28.1"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
@@ -637,13 +637,18 @@ def launch_app(resources_dir):
         # 解法：DETACHED_PROCESS 让它彻底脱离当前控制台，三路标准流全部指向 NUL，
         #      再配 CREATE_NEW_PROCESS_GROUP 免得 Ctrl+C 波及到它。
         flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # 关键：从 Electron 系终端（VS Code / WorkBuddy / Cursor 等）里运行时，
+        # 环境里会带着 ELECTRON_RUN_AS_NODE=1。Antigravity 本身也是 Electron 应用，
+        # 继承到这个变量后会被当成 Node 解释器启动：不弹窗、立刻以 0 退出，
+        # 看起来就像"汉化把软件搞坏了"。这里必须显式剔除。
+        child_env = {k: v for k, v in os.environ.items() if k.upper() != "ELECTRON_RUN_AS_NODE"}
         try:
             p = subprocess.Popen(
                 [exe], cwd=os.path.dirname(exe),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                close_fds=True, creationflags=flags)
+                close_fds=True, creationflags=flags, env=child_env)
         except Exception:
             # 极端情况（沙箱/权限拦截）退回老办法：能启动就行，代价是日志会打到本窗口
             try:
