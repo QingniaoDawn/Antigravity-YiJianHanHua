@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.10（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.10.1（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -93,8 +93,8 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.10"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.28.1"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1）
+TOOL_VERSION = "v1.10.1"             # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.28.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
 # --- 检查更新（全程序唯一的联网入口，仅当用户主动点「检查更新」才会触发）---
@@ -1366,7 +1366,10 @@ def patch_all(extract_dir, engine_code, data, report):
 
     def wr(p, s):
         open(p, 'w', encoding='utf-8', newline='').write(s)
-        modified.append(p)
+        # 同一个文件可能被注入多次（menu.js 挂钩 + 子菜单 + 更新菜单；tray.js 挂钩 + 注入），
+        # 这里去重：对外报的应该是「被改动的文件数」，不是「写盘次数」。
+        if p not in modified:
+            modified.append(p)
 
     data_json = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
     # engine.js 中的占位符替换为真实词典
