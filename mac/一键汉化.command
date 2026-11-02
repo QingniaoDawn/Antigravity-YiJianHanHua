@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Antigravity 一键汉化 v1.10.1 · macOS 版
+# Antigravity 一键汉化 v1.11 · macOS 版
 # ------------------------------------------------------------
 # 用法：在 Finder 里双击本文件即可
 # 若双击无反应 / 提示"未验证的开发者"：
@@ -30,7 +30,7 @@ cd "$(dirname "$PY_FILE")" || exit 1
 
 echo ""
 echo "=============================================================="
-echo "  Antigravity 一键汉化 v1.10.1  ·  macOS 版"
+echo "  Antigravity 一键汉化 v1.11  ·  macOS 版"
 echo "  (首次汉化请耐心等待约 1-2 分钟，全程仅本地操作)"
 echo "=============================================================="
 echo ""
@@ -65,9 +65,11 @@ fi
 echo "[✓] 已找到 Python：$($PYCMD --version 2>&1)"
 
 # ---------- 检查 Node.js ----------
-if ! command -v npx >/dev/null 2>&1; then
+# node 是硬要求（改完 JS 要做语法门禁）；npx 只负责调官方 asar 工具，
+# 缺了会由主程序自动改用内置打包器，所以这里只提醒、不阻断。
+if ! command -v node >/dev/null 2>&1; then
   echo ""
-  echo "[错误] 未检测到 Node.js（解包/打包 app.asar 需要）。"
+  echo "[错误] 未检测到 Node.js（语法校验需要 node 命令）。"
   echo ""
   echo "  安装方法（任选其一）："
   echo "    1. 打开终端，粘贴执行：  brew install node"
@@ -77,6 +79,9 @@ if ! command -v npx >/dev/null 2>&1; then
   exit 1
 fi
 echo "[✓] 已找到 Node.js：$(node --version 2>&1)"
+if ! command -v npx >/dev/null 2>&1; then
+  echo "[!] 未找到 npx，本次将直接使用内置打包器（不影响汉化结果）"
+fi
 
 # ---------- 检查 macOS 签名工具（缺了汉化后 App 打不开） ----------
 if ! command -v codesign >/dev/null 2>&1 || ! command -v xattr >/dev/null 2>&1; then

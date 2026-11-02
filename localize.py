@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.10.1（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.11（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -93,7 +93,7 @@ MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 
-TOOL_VERSION = "v1.10.1"             # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.11"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.28.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2）
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
@@ -319,16 +319,87 @@ def find_app_bundle(resources_dir):
     return None
 
 
+# npm 缓存不可写时记录原因（None = 一切正常）。cmd_apply 据此决定是否绕开 npx。
+NPM_CACHE_PROBLEM = None
+_NPM_CACHE_CHECKED = False       # 菜单里反复选 1 时不必每次都起一个 npm 进程
+
+
+def probe_npm_cache():
+    """探测 npm 缓存目录能不能写。
+
+    为什么必须探测：npx 每次运行都要往 npm 缓存里落临时文件，缓存目录不可写时
+    （Node 装在 C 盘根目录但只给了管理员权限、整个目录从别的账户拷过来、
+    杀软的勒索防护锁住缓存、缓存被指到只读盘……），npx 会在**真正干活之前**
+    就以 `EPERM: operation not permitted` 退出，还给用户甩一屏 npm 内部栈。
+    更坑的是：解包这步失败会被内置解包器默默兜住，用户以为一切正常，
+    直到最后"重新打包"才炸——那时已经跑了半天。
+
+    提前探测有两个作用：
+      1. 把英文栈换成人话 + 可直接复制的修复命令；
+      2. 直接绕开 npx 走内置工具链，不让整个流程死在这里。
+
+    返回可写的缓存路径（探测不出结论时返回 None，交给 npx 自己报错）。
+    """
+    global NPM_CACHE_PROBLEM, _NPM_CACHE_CHECKED
+    if _NPM_CACHE_CHECKED:
+        return None
+    _NPM_CACHE_CHECKED = True
+    npm = shutil.which("npm")
+    if not npm:
+        return None                      # 没 npm 就没得查，不是本函数的职责
+    try:
+        r = subprocess.run([npm, "config", "get", "cache"], capture_output=True,
+                           text=True, encoding='utf-8', errors='replace', timeout=20)
+        cache = (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception:
+        return None                      # npm 本身跑不起来，交给后续步骤报错
+
+    if not cache:
+        return None
+
+    # 常见坑：在 PowerShell 里执行 cmd 写法时 %LOCALAPPDATA% 不会展开，
+    # npm 会把字面量 "%LOCALAPPDATA%\npm-cache" 当路径存下来 —— 同样是坏的。
+    if not os.path.isabs(cache) or "%" in cache:
+        NPM_CACHE_PROBLEM = f"{cache}（不是有效绝对路径，可能是变量没展开）"
+    else:
+        # 探针名带 PID：两个实例同时启动时不会互相删掉对方的文件
+        probe = os.path.join(cache, f"._agyzh_write_probe_{os.getpid()}")
+        try:
+            os.makedirs(cache, exist_ok=True)
+            with open(probe, "wb") as f:
+                f.write(b"ok")
+            os.remove(probe)
+            return cache
+        except OSError as e:
+            NPM_CACHE_PROBLEM = f"{cache}（{e.strerror or e}）"
+
+    log(f"npm 缓存目录不可写：{NPM_CACHE_PROBLEM}", warn=True)
+    log("这会让 npx 在下载工具之前就报 EPERM 失败。修复办法（在 cmd 里执行一次，不需要管理员）：", warn=True)
+    log('    npm config set cache "%LOCALAPPDATA%\\npm-cache"', warn=True)
+    log("本次已自动改用内置解包/打包器，不依赖 npx，可以照常继续。", ok=True)
+    return None
+
+
 def check_env():
-    """检查运行环境：node/npx（解包打包必需）+ macOS 额外需要的 codesign/xattr。
+    """检查运行环境：node（打包后语法门禁必需）+ npx（官方 asar 工具，可选）+ macOS 签名工具。
+
+    注意 npx 只影响"用哪种方式打包"：npm 缓存不可写时会被自动跳过，
+    改走内置打包器，所以这里不因 npx 不可用而中止。
+
     提前检查 codesign 是为了避免"汉化写进去了、App 却打不开"这种最糟的结局
     却让用户一头雾水。"""
     node = shutil.which("node")
     npx = shutil.which("npx")
-    if not node or not npx:
-        die("未检测到 Node.js（需要 node 和 npx 命令）。\n"
+    if not node:
+        # node 是硬依赖：解包/打包可以自己来，但"改完的 JS 能不能解析"这道语法门禁
+        # 离不开 node --check。宁可现在说清楚，也不能把没校验的包部署进去。
+        die("未检测到 Node.js（需要 node 命令）。\n"
             "请安装 Node.js 18+：https://nodejs.org/ 安装时勾选 Add to PATH"
             + ("（macOS 推荐用 Homebrew：brew install node）" if IS_MAC else ""))
+    if not npx:
+        log("未检测到 npx，本次直接使用内置打包器（不影响汉化结果）", warn=True)
+    else:
+        probe_npm_cache()
     if IS_MAC:
         # macOS 特有：改包后必须重签名，缺 codesign 会导致 App 打不开
         missing = [t for t in ("codesign", "xattr") if shutil.which(t) is None]
@@ -357,10 +428,22 @@ def asar_run(npx, *args, timeout=300, soft=False):
 
     soft=True：失败抛 AsarToolError 而不是直接退出，供调用方降级。
     """
+    if not npx:
+        # 正常流程进不来（builtin_required 会先拦截），纯防御：让降级路径拿到
+        # 一个明确的异常，而不是 [None, "--yes", ...] 触发的 TypeError。
+        if soft:
+            raise AsarToolError("没有可用的 npx")
+        die("没有可用的 npx，无法调用官方 asar 工具。")
     cmd = [npx, "--yes", "@electron/asar"] + [str(a) for a in args]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            encoding='utf-8', errors='replace')
+    except OSError as e:
+        # npx 命令"存在"但根本执行不了：npm 目录被删了一半、被杀软拦、
+        # 32/64 位错配。不接住会变成 Python traceback，用户看到的是天书。
+        if soft:
+            raise AsarToolError(f"无法启动 asar 工具：{e}")
+        die(f"无法启动 asar 工具（{e}）")
     except subprocess.TimeoutExpired:
         if soft:
             raise AsarToolError("asar 工具执行超时")
@@ -453,6 +536,468 @@ def asar_extract_py(asar_path, out_dir):
         return counter[0], skipped, links
     finally:
         f.close()
+
+
+# ----------------------------------------------------------------------------
+# asar 写入侧：内置打包器 + 自校验（官方 @electron/asar 不可用时的完整回退）
+# ----------------------------------------------------------------------------
+# 为什么必须自己实现"写"：npx 跑不起来时（npm 缓存 EPERM、公司网络装不上包、
+# Node 环境残缺、杀软拦截），官方工具连启动都做不到，而汉化最后一步恰恰是
+# "把改好的目录重新打回 app.asar"——只有只读的降级路径等于死路一条。
+#
+# 二进制格式必须与 @electron/asar 4.x 逐字段对齐，否则 Electron 会按错误的
+# 偏移读数据，表现是白屏/启动失败，而且几乎无法反查。实测对照的真实头部：
+#   [0:4]   UInt32 固定 4
+#   [4:8]   UInt32 sizeBuf 里写的 headerBuf.length = 8 + align4(jsonLen)
+#   [8:12]  UInt32 headerPickle 的 payloadSize = 4 + align4(jsonLen)
+#   [12:16] UInt32 真实 jsonLen（不带 padding）
+#   [16:]   JSON + 补零到 4 字节对齐
+#   数据区起点 = 12 + [8:12] = 16 + align4(jsonLen)
+ASAR_BLOCK_SIZE = 4 * 1024 * 1024      # 与官方 integrity.js 的 BLOCK_SIZE 一致
+ASAR_MAX_FILE = 0xFFFFFFFF             # 官方的 UINT32_MAX 上限（单个文件 4GB）
+
+
+def _walk_raise(e):
+    """os.walk 的错误处理器：默认行为是把权限错误吞掉、静默跳过读不了的目录，
+    结果就是「包里悄悄缺文件」和「校验看着一致」同时发生。这里一律抛出。"""
+    raise e
+
+
+def _js_sort_key(s):
+    """模拟 JS 默认字符串排序（按 UTF-16 码元逐个比较）。
+
+    Python 的 str 排序按 Unicode 码点比，在增补平面字符（emoji、部分生僻汉字）上
+    顺序与 JS 相反：U+1F600 的 UTF-16 首码元是 0xD83D(55357)，小于 U+FF5A(65370)；
+    而它的码点 0x1F600(128512) 又大于 0xFF5A。实测两个文件打包后 header 键序颠倒。
+    排序只影响 header 键序：功能不受影响，但做不到与官方产物逐字节一致。
+    """
+    raw = s.encode("utf-16-be", "surrogatepass")
+    return tuple(int.from_bytes(raw[i:i + 2], "big") for i in range(0, len(raw), 2))
+
+
+def _sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(1024 * 1024)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def asar_file_integrity(path):
+    """按 @electron/asar 的规则算一个文件的完整性记录。
+
+    结构与官方 integrity.js 的 getFileIntegrity() 完全一致：
+        {"algorithm":"SHA256", "hash":<整文件 hex>,
+         "blockSize":4194304, "blocks":[<每 4MB 一块的 hex>]}
+
+    三个容易踩的点：
+      * hash 是**十六进制**字符串，不是 base64（Electron 只认 hex）；
+      * 分块按 4MB 累计切，不能按读取批次切（读取 chunk 可以任意大小）；
+      * 空文件也必须有一个 block（空内容的 sha256），blocks 留空会让校验失败。
+
+    返回 (integrity 字典, 文件字节数)
+    """
+    import hashlib
+    whole = hashlib.sha256()
+    blk = hashlib.sha256()
+    blocks = []
+    filled = 0
+    size = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            whole.update(chunk)
+            pos = 0
+            while pos < len(chunk):
+                take = min(ASAR_BLOCK_SIZE - filled, len(chunk) - pos)
+                blk.update(chunk[pos:pos + take])
+                filled += take
+                pos += take
+                if filled == ASAR_BLOCK_SIZE:
+                    blocks.append(blk.hexdigest())
+                    blk = hashlib.sha256()
+                    filled = 0
+    if filled > 0 or not blocks:
+        blocks.append(blk.hexdigest())
+    return ({"algorithm": "SHA256", "hash": whole.hexdigest(),
+             "blockSize": ASAR_BLOCK_SIZE, "blocks": blocks}, size)
+
+
+def asar_pack_py(src_dir, out_asar, unpack_prefixes=None):
+    """纯 Python 打包 asar（官方 @electron/asar 不可用时的回退方案）。
+
+    unpack_prefixes：需要外部化到 `<out>.unpacked/` 的路径前缀（'/' 分隔）。
+    语义与官方 `--unpack-dir` 一致：文件相对路径等于前缀、或以 "前缀/" 开头即外部化。
+
+    返回 (包内文件数, 外部化文件数, 产物字节数, 实际外部化的路径集合)
+    """
+    import struct
+
+    src_dir = os.path.abspath(src_dir)
+    if not os.path.isdir(src_dir):
+        raise RuntimeError(f"待打包目录不存在：{src_dir}")
+
+    prefixes = []
+    for p in (unpack_prefixes or []):
+        p = str(p).strip().strip("/\\").replace("\\", "/")
+        if p and p not in prefixes:
+            prefixes.append(p)
+
+    def should_unpack(rel_slash):
+        for p in prefixes:
+            if rel_slash == p or rel_slash.startswith(p + "/"):
+                return True
+        return False
+
+    # 1) 收集全部路径并做全局字符串排序。
+    #    官方 crawlfs 是 crawled.sort()（JS 默认按 UTF-16 码元排序），这里必须用
+    #    _js_sort_key 而不是 Python 默认排序，否则增补平面字符会排错位置。
+    dirs_rel, files_rel = [], []
+    for root, dnames, fnames in os.walk(src_dir, onerror=_walk_raise):
+        rel_root = os.path.relpath(root, src_dir)
+        rel_root = "" if rel_root == "." else rel_root
+        for d in dnames:
+            dirs_rel.append(os.path.join(rel_root, d) if rel_root else d)
+        for fn in fnames:
+            files_rel.append(os.path.join(rel_root, fn) if rel_root else fn)
+    all_rel = sorted(set(dirs_rel) | set(files_rel),
+                     key=lambda p: _js_sort_key(p.replace(os.sep, "/")))
+
+    header = {"files": {}}
+
+    def node_for(rel):
+        """取（必要时创建）目录链节点。与官方 searchNodeFromDirectory 行为一致。"""
+        cur = header
+        if not rel:
+            return cur
+        for part in rel.replace(os.sep, "/").split("/"):
+            cur = cur.setdefault("files", {}).setdefault(part, {"files": {}})
+        return cur
+
+    packed = unpacked = 0
+    offset = 0
+    seen_hash = {}          # 官方 4.x 会按内容 hash 复用数据段，这里保持一致，避免体积翻倍
+    pending = []            # [(源路径, 相对路径, 是否外部化)]
+    unpacked_paths = set()
+
+    for rel in all_rel:
+        abs_path = os.path.join(src_dir, rel)
+        rel_slash = rel.replace(os.sep, "/")
+        parent_node = node_for(os.path.dirname(rel))
+        name = os.path.basename(rel)
+
+        if os.path.islink(abs_path):
+            # 符号链接在 asar 里是 {"link": 目标} 条目，不是文件内容。
+            # 内置打包器不重建它：os.walk 不跟随链接目录，会把链接当成空目录写进
+            # header —— 内容凭空消失且校验也查不出来（那种包能启动但功能缺失）。
+            # 宁可明确失败，也不能产出这种包。
+            raise RuntimeError(
+                f"待打包目录里含符号链接，内置打包器不支持：{rel_slash}\n"
+                "  请先修复 npm 环境（让 npx 可用）后重试。")
+
+        if os.path.isdir(abs_path):
+            node = parent_node["files"].setdefault(name, {})
+            # 键序对齐官方 insertDirectory：先 unpacked 再 files。
+            # 顺序反了功能一样（Electron 按 key 查），但整包就做不到与官方
+            # 产物逐字节一致，日后比对差异会被这个假信号带偏。
+            if should_unpack(rel_slash):
+                node["unpacked"] = True
+            node.setdefault("files", {})
+            continue
+
+        if not os.path.isfile(abs_path):
+            raise RuntimeError(f"不是普通文件，无法打包：{rel}")
+
+        node = parent_node["files"].setdefault(name, {})
+        integrity, size = asar_file_integrity(abs_path)
+        if size > ASAR_MAX_FILE:
+            raise RuntimeError(f"单个文件超过 4.2GB，asar 格式不支持：{rel}")
+        node["size"] = size
+        if should_unpack(rel_slash):
+            # 外部文件在 asar 里只留索引，没有 offset（内容在 .unpacked 目录）
+            node["unpacked"] = True
+            node["integrity"] = integrity
+            unpacked += 1
+            unpacked_paths.add(rel_slash)
+            pending.append((abs_path, rel, True))
+        else:
+            h = integrity["hash"]
+            # 键序对齐官方 storeFileEntry：size → offset → [executable] → integrity
+            if h in seen_hash:
+                node["offset"] = seen_hash[h]
+            else:
+                node["offset"] = str(offset)
+                seen_hash[h] = str(offset)
+                offset += size
+                pending.append((abs_path, rel, False))
+            if not IS_WIN and (os.stat(abs_path).st_mode & 0o100):
+                node["executable"] = True
+            node["integrity"] = integrity
+            packed += 1
+
+    # 2) 序列化 header：与 JSON.stringify 对齐（无空格、不转义非 ASCII）
+    #    ensure_ascii=False 不能省：官方 JSON.stringify 直接输出原始 UTF-8 字符，
+    #    默认的 True 会把中文/日文文件名转成 \uXXXX，header 变长且与官方产物对不上。
+    json_bytes = json.dumps(header, separators=(",", ":"),
+                            ensure_ascii=False).encode("utf-8")
+    json_len = len(json_bytes)
+    padded = (json_len + 3) & ~3
+    header_payload = 4 + padded           # Pickle payloadSize = 长度前缀 + 对齐后的 JSON
+    head = struct.pack("<4I",
+                       4,
+                       8 + padded,        # sizeBuf 里写的 headerBuf.length
+                       header_payload,    # headerPickle 的 payloadSize
+                       json_len)          # 真实 JSON 长度（不带 padding）
+
+    # 3) 落盘：先写 .part 再改名，避免中途失败留下半个"看起来存在"的 asar
+    out_unpacked = out_asar + ".unpacked"
+    if os.path.isdir(out_unpacked):
+        shutil.rmtree(out_unpacked, ignore_errors=True)
+    if unpacked:
+        os.makedirs(out_unpacked, exist_ok=True)
+    part = out_asar + ".part"
+    try:
+        with open(part, "wb") as f:
+            f.write(head)
+            f.write(json_bytes)
+            f.write(b"\x00" * (padded - json_len))
+            for abs_path, rel, is_unpack in pending:
+                if is_unpack:
+                    dest = os.path.join(out_unpacked, rel)
+                    parent = os.path.dirname(dest)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    shutil.copyfile(abs_path, dest)
+                else:
+                    with open(abs_path, "rb") as srcf:
+                        shutil.copyfileobj(srcf, f, 1024 * 1024)
+        os.replace(part, out_asar)
+    except Exception:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+    return packed, unpacked, os.path.getsize(out_asar), unpacked_paths
+
+
+def asar_verify_archive(asar_path, src_dir, expect_unpacked=None):
+    """把刚打好的包原样读回来，逐文件与源目录核对（内置打包器的自证手段）。
+
+    "写进去了"不等于"能读对"：Electron 完全依赖 header 里的 offset/size 定位
+    内容，少算 1 个字节就会读出错位的垃圾。所以必须闭环验证——
+        源文件 sha256 == header 记录的 hash == 从包内按 offset/size 读回的 sha256
+    再核对文件集合与外部化清单。任何一项不符都不允许部署。
+
+    返回问题描述列表（空列表 = 全部通过）。
+    """
+    import struct
+    import hashlib
+
+    problems = []
+    src_dir = os.path.abspath(src_dir)
+    archive_size = os.path.getsize(asar_path)
+
+    with open(asar_path, "rb") as f:
+        head = f.read(16)
+        if len(head) < 16:
+            return ["产物头部不足 16 字节"]
+        magic, _size, header_size, header_str_size = struct.unpack("<4I", head)
+        if magic != 4:
+            return [f"产物 magic 异常（{magic}）"]
+        f.seek(16)
+        try:
+            header = json.loads(f.read(header_str_size).decode("utf-8"))
+        except Exception as e:
+            return [f"产物 header 解析失败（{e}）"]
+        base = 12 + header_size
+        unpacked_dir = asar_path + ".unpacked"
+        found = set()
+
+        def walk(node, prefix):
+            for name, entry in node.get("files", {}).items():
+                rel = f"{prefix}/{name}" if prefix else name
+                if "files" in entry:
+                    walk(entry, rel)
+                    continue
+                if "link" in entry:
+                    # 链接条目也要计入 found：源目录里它是符号链接（os.walk 会列出），
+                    # 不算进来会被反向核对误报成"漏打包"。
+                    found.add(rel)
+                    continue
+                found.add(rel)
+                integ = entry.get("integrity") or {}
+                want = integ.get("hash")
+                src_path = os.path.join(src_dir, rel.replace("/", os.sep))
+                if not os.path.isfile(src_path):
+                    problems.append(f"{rel}：源目录里没有这个文件")
+                    continue
+                try:
+                    got = _sha256_file(src_path)
+                except OSError as e:
+                    problems.append(f"{rel}：读源文件失败（{e}）")
+                    continue
+                if not want:
+                    problems.append(f"{rel}：header 缺少 integrity")
+                elif got != want:
+                    problems.append(f"{rel}：header 记录的 hash 与源文件不符")
+                if entry.get("unpacked"):
+                    ext = os.path.join(unpacked_dir, rel.replace("/", os.sep))
+                    if not os.path.isfile(ext):
+                        problems.append(f"{rel}：声明外部化但 .unpacked 下缺文件")
+                    elif _sha256_file(ext) != got:
+                        problems.append(f"{rel}：.unpacked 里的内容与源文件不符")
+                    continue
+                off = entry.get("offset")
+                if off is None:
+                    problems.append(f"{rel}：既没有 offset 也没声明 unpacked")
+                    continue
+                try:
+                    off = int(off)
+                    size = int(entry.get("size", -1))
+                except (TypeError, ValueError):
+                    problems.append(f"{rel}：offset/size 不是整数")
+                    continue
+                if size != os.path.getsize(src_path):
+                    problems.append(f"{rel}：size 与源文件大小不符")
+                if off < 0 or base + off + size > archive_size:
+                    problems.append(f"{rel}：数据区间越界")
+                    continue
+                f.seek(base + off)
+                data = f.read(size)
+                if len(data) != size:
+                    problems.append(f"{rel}：按 offset/size 只读到 {len(data)} 字节")
+                elif hashlib.sha256(data).hexdigest() != got:
+                    problems.append(f"{rel}：包内实际字节与源文件不一致")
+
+        walk(header, "")
+
+        # 反向核对：源目录里每个文件都必须出现在包中（漏打包会静默丢功能）
+        for root, _dirs, fnames in os.walk(src_dir, onerror=_walk_raise):
+            rel_root = os.path.relpath(root, src_dir)
+            rel_root = "" if rel_root == "." else rel_root
+            for fn in fnames:
+                p = (rel_root + os.sep + fn) if rel_root else fn
+                ps = p.replace(os.sep, "/")
+                if ps not in found:
+                    problems.append(f"{ps}：源目录有、产物里没有（漏打包）")
+
+        if expect_unpacked is not None:
+            got_up = get_unpacked_set(asar_path)
+            for miss in sorted(set(expect_unpacked) - got_up)[:5]:
+                problems.append(f"{miss}：应外部化却没标记 unpacked")
+    return problems
+
+
+def builtin_required(npx):
+    """是否必须完全绕开 npx（没有 npx，或 npm 缓存不可写）"""
+    return (not npx) or (NPM_CACHE_PROBLEM is not None)
+
+
+def _report_extract_skips(skipped_unpacked, skipped_links):
+    """内置解包器跳过项的统一提示（两类跳过原因完全不同，别合并成一条）"""
+    if skipped_unpacked:
+        log(f"跳过 {len(skipped_unpacked)} 个官方包自身缺失/异常的条目（与汉化无关，不影响使用）：", warn=True)
+        for _s in skipped_unpacked[:5]:
+            log(f"    {_s}", warn=True)
+    if skipped_links:
+        log(f"跳过 {len(skipped_links)} 个符号链接（Windows 无法重建，重打包后会消失）：", warn=True)
+        for _s in skipped_links[:5]:
+            log(f"    {_s}", warn=True)
+        log("若汉化后出现异常，请把这段信息反馈给维护者", warn=True)
+
+
+def extract_any(npx, asar_path, out_dir, quiet=False):
+    """解包：能走官方工具就走，走不通自动降级内置解包器。
+
+    返回 (实际使用的工具, 跳过的外部条目, 跳过的符号链接)，工具为 "npx"/"builtin"。
+    """
+    if builtin_required(npx):
+        n_files, skipped, links = asar_extract_py(asar_path, out_dir)
+        if not quiet:
+            log(f"内置解包器完成：{n_files} 个文件", ok=True)
+            _report_extract_skips(skipped, links)
+        return "builtin", skipped, links
+    try:
+        asar_run(npx, "extract", asar_path, out_dir, soft=True)
+        return "npx", [], []
+    except AsarToolError:
+        # 两个来源会导致这里失败：npm 环境坏（缓存不可写等）或官方包自身有坏条目。
+        # 两种情况内置解包器都能扛，所以统一降级，不再区分。
+        log("官方 asar 工具解包失败，改用内置解包器处理", warn=True)
+        n_files, skipped, links = asar_extract_py(asar_path, out_dir)
+        if not quiet:
+            log(f"内置解包器完成：{n_files} 个文件", ok=True)
+            _report_extract_skips(skipped, links)
+        return "builtin", skipped, links
+
+
+def _discard_partial(out_asar):
+    """清掉内置打包器的半成品，绝不留下"看起来存在"的残包"""
+    for p in (out_asar + ".part", out_asar, out_asar + ".unpacked"):
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+            elif os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def pack_any(npx, src_dir, out_asar, unpack_pattern, unpack_prefixes,
+             force_builtin=False):
+    """打包：优先官方工具，失败或环境不可用时用内置打包器（带闭环自校验）。
+
+    force_builtin：外部化目录有多处时置 True。官方 `--unpack-dir` 只接受单条
+    前缀/模式，多目录只能靠花括号拼 glob，而它对 isUnpackedDir 的 startsWith
+    判定无效——结果是外部文件全被塞回包内、结构守卫必然报缺失。这种情况直接
+    用支持多前缀的内置打包器，别让它撞上一条注定失败的路径。
+
+    返回 "npx" / "builtin"。内置路径任何失败都转成 AsarToolError 抛出，
+    由调用方中止——绝不允许把未经核对的新包替换上去。
+    """
+    if not (force_builtin or builtin_required(npx)):
+        try:
+            # soft=True 是降级的前提：不带它会直接 die，下面的 except 永远等不到异常。
+            if unpack_pattern:
+                asar_run(npx, "pack", src_dir, out_asar,
+                         "--unpack-dir", unpack_pattern, soft=True)
+            else:
+                asar_run(npx, "pack", src_dir, out_asar, soft=True)
+            return "npx"
+        except AsarToolError:
+            log("官方 asar 工具打包失败，改用内置打包器", warn=True)
+    elif force_builtin and not builtin_required(npx):
+        log(f"外部目录有 {len(unpack_prefixes)} 处，官方 --unpack-dir 只能表达单条前缀，"
+            "改用内置打包器", warn=True)
+
+    try:
+        packed, unpacked, nbytes, unpacked_paths = asar_pack_py(
+            src_dir, out_asar, unpack_prefixes)
+        log(f"内置打包器完成：{packed} 个文件写入包内、{unpacked} 个外部化，"
+            f"产物 {nbytes // 1024} KB", ok=True)
+        problems = asar_verify_archive(out_asar, src_dir,
+                                       expect_unpacked=unpacked_paths)
+    except AsarToolError:
+        raise
+    except Exception as e:
+        # 内置路径的失败五花八门（磁盘满、文件被占用、权限不足、含符号链接、
+        # 目录读不了……），调用方只认 AsarToolError。不转就会直接喷 traceback，
+        # 用户看到的是 Python 栈而不是"打包失败，原包未改动"。
+        _discard_partial(out_asar)
+        raise AsarToolError(f"内置打包失败：{e}")
+    if problems:
+        _discard_partial(out_asar)
+        raise AsarToolError("内置打包自校验未通过：" + "；".join(problems[:3]))
+    log("内置打包自校验通过：所有文件按 offset 读回后与源文件逐字节一致", ok=True)
+    return "builtin"
 
 
 def node_check(files):
@@ -1625,25 +2170,7 @@ def cmd_apply(resources, npx, auto_yes=False):
     atexit.register(_cleanup_work)
     extract_dir = os.path.join(work, "x")
     log("正在解包 app.asar ...")
-    skipped_unpacked = []
-    skipped_links = []
-    try:
-        asar_run(npx, "extract", asar, extract_dir, soft=True)
-    except AsarToolError:
-        # 官方包存在「header 声明 unpacked、但 app.asar.unpacked 下缺该文件」的坏条目时，
-        # @electron/asar 会整体报错退出。退回内置解包器，逐条处理、跳过缺失项。
-        log("官方 asar 工具解包失败，改用内置解包器处理", warn=True)
-        n_files, skipped_unpacked, skipped_links = asar_extract_py(asar, extract_dir)
-        log(f"内置解包器完成：{n_files} 个文件", ok=True)
-        if skipped_unpacked:
-            log(f"跳过 {len(skipped_unpacked)} 个官方包自身缺失/异常的条目（与汉化无关，不影响使用）：", warn=True)
-            for _s in skipped_unpacked[:5]:
-                log(f"    {_s}", warn=True)
-        if skipped_links:
-            log(f"跳过 {len(skipped_links)} 个符号链接（Windows 无法重建，重打包后会消失）：", warn=True)
-            for _s in skipped_links[:5]:
-                log(f"    {_s}", warn=True)
-            log("若汉化后出现异常，请把这段信息反馈给维护者", warn=True)
+    extract_any(npx, asar, extract_dir)
     ver = get_asar_version(extract_dir)
     log(f"检测到 Antigravity 版本：v{ver}", ok=True)
     # 身份守卫：确认这是 Antigravity 的程序包（防止 --path 指错目录误伤其他软件）
@@ -1679,7 +2206,14 @@ def cmd_apply(resources, npx, auto_yes=False):
     # 结构参照：优先用干净的官方备份（当前部署包本身可能带历史布局偏差）
     bak = asar + ".bak"
     ref_asar = bak if (os.path.isfile(bak) and not asar_is_localized(bak)) else asar
-    official_unpacked = get_unpacked_set(ref_asar)
+    try:
+        official_unpacked = get_unpacked_set(ref_asar)
+    except Exception as e:
+        # 备份文件损坏（磁盘错误、被半截写入）时会解析失败。直接抛就是 Python 栈，
+        # 用户完全看不懂。退一步用当前包当参照：结构守卫照样生效，只是参照对象换了。
+        log(f"参照包头部解析失败（{e}），改用当前包作为结构参照", warn=True)
+        ref_asar = asar
+        official_unpacked = get_unpacked_set(ref_asar)
     # 参照包里「索引声明为 unpacked、但外部文件实际不存在」的条目，本来就读不到，
     # 不能算成打包遗漏——否则 2.28.1 那种官方漏文件会让结构守卫误报中止。
     #
@@ -1697,13 +2231,26 @@ def cmd_apply(resources, npx, auto_yes=False):
         if absent:
             official_unpacked -= absent
             log(f"参照包有 {len(absent)} 个外部文件实际不存在（官方包自身问题），已从结构守卫排除", warn=True)
-    unpack_pattern, _ = derive_unpack_pattern(ref_asar)
+    # 内置打包器按"目录前缀"判定外部化，与官方 --unpack-dir 的 startsWith 语义一致。
+    # 不用 derive_unpack_pattern 的花括号 glob：那个写法只在单目录时有效，
+    # 多目录时 startsWith("{a,b}") 永远不成立，会把外部文件全塞回包内。
+    # 这里保留 original 集合（未剔除缺失项）来推导前缀——前缀是目录级的，
+    # 与单个文件在不在无关。
+    unpack_pattern, all_unpacked_entries = derive_unpack_pattern(ref_asar)
+    unpack_prefixes = []
+    for _p in sorted(all_unpacked_entries):
+        _parts = _p.split("/")
+        _pref = "/".join(_parts[:2]) if len(_parts) >= 2 else _parts[0]
+        if _pref not in unpack_prefixes:
+            unpack_prefixes.append(_pref)
     log("正在重新打包 app.asar ..."
         + (f"（外部目录模式：{unpack_pattern}）" if unpack_pattern else "（无外部目录）"))
-    if unpack_pattern:
-        asar_run(npx, "pack", extract_dir, temp_asar, "--unpack-dir", unpack_pattern)
-    else:
-        asar_run(npx, "pack", extract_dir, temp_asar)
+    try:
+        pack_any(npx, extract_dir, temp_asar, unpack_pattern, unpack_prefixes,
+                 force_builtin=len(unpack_prefixes) > 1)
+    except AsarToolError as e:
+        cleanup_temp(resources, work)
+        die(f"打包失败，已中止（原 app.asar 未被修改）。\n  {e}")
     if not os.path.isfile(temp_asar):
         cleanup_temp(resources, work)
         die("打包产物缺失，已中止。")
@@ -1727,7 +2274,7 @@ def cmd_apply(resources, npx, auto_yes=False):
 
     # 7. 部署后复检：解包临时产物，验证标记与语法
     verify_dir = os.path.join(work, "v")
-    asar_run(npx, "extract", temp_asar, verify_dir)
+    extract_any(npx, temp_asar, verify_dir, quiet=True)
     marker_checks = [
         (os.path.join(verify_dir, "dist", "preload.js"), ENGINE_START),
         (os.path.join(verify_dir, "dist", "menu.js"), MENU_START),
@@ -1836,7 +2383,11 @@ def cleanup_temp(resources, work):
     # 清理本次 PID 的临时产物 + 任意历史残留（app.asar.agyzh.*.tmp）
     try:
         for name in os.listdir(resources):
-            if name.startswith("app.asar.agyzh.") and (name.endswith(".tmp") or name.endswith(".tmp.unpacked")):
+            # .tmp.part 是内置打包器的写入中间态：进程被强杀时会残留，
+            # 不认它就会在 resources 里留一个几十 MB 的垃圾文件。
+            if name.startswith("app.asar.agyzh.") and (
+                    name.endswith(".tmp") or name.endswith(".tmp.unpacked")
+                    or name.endswith(".tmp.part")):
                 p = os.path.join(resources, name)
                 if os.path.isfile(p):
                     try:

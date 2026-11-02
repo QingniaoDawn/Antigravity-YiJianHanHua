@@ -75,7 +75,9 @@ python3 localize.py apply --path "/Applications/Antigravity.app"   # 指定路�
 - macOS 12(Monterey)或更高
 - 已安装 Antigravity（默认在 `/Applications`，其他常见位置也能自动找到）
 - **Python 3.8+**：终端执行 `brew install python`
-- **Node.js 18+**：终端执行 `brew install node`（解包/打包 app.asar 必需）
+- **Node.js 18+**：终端执行 `brew install node`
+  （`node` 用于改完 JS 后的语法门禁，是硬要求；`npx` 只用于官方 asar 工具，
+  不可用时工具会改用内置打包器，不影响汉化结果）
 - **Xcode 命令行工具**：终端执行 `xcode-select --install`
   （提供 `codesign` / `xattr`，**没有它汉化后 App 会打不开**，务必确认已装）
 
@@ -293,8 +295,8 @@ Antigravity 里按 `Cmd+Option+I` 打开开发者工具，
 
 ## 安全特性
 
-- **零网络**：全程本地操作，引擎不含任何联网代码（唯一的 npx 调用只用于下载
-  官方 @electron/asar 打包工具）
+- **零网络**：全程本地操作，引擎不含任何联网代码（`npx` 只用于取官方
+  @electron/asar 工具；取不到时会改用内置打包器，全程仍然不联网）
 - **语法门禁**：所有改动先过 `node --check`，不过绝不写入；部署后还会二次复检
 - **备份永不降级**：官方更新后重新汉化时，备份自动刷新为新版官方原版
 - **幂等可重入**：重复运行不叠加注入（已实测两次执行产物字节级一致）
