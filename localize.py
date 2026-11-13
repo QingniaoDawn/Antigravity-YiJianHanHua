@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.11（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.12（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.request
 
@@ -73,6 +74,20 @@ def _fit_glyphs(text):
     return out
 
 
+# ---------------------------------------------------------------------------
+# 注意：不要在这里给 stdout 改 encoding。改动前先读完这段。
+#
+# 曾经尝试过"把 stdout 编码对齐到控制台代码页(cp936)"，结果反而制造了乱码，已回滚。
+# 原因：Windows 上 Python 3.6+ 的控制台输出走 _WindowsConsoleIO，内部链路是
+#     文本 → encode(utf-8) → 字节 → decode(utf-8) → WriteConsoleW(宽字符)
+# 也就是说中文能不能正常显示，跟控制台代码页 936 没有关系，靠的是这套宽字符链路。
+#
+# 一旦把 encoding 改成 cp936，TextIOWrapper 吐出的就是 GBK 字节，
+# _WindowsConsoleIO 仍然按 UTF-8 去解，解出来全是方块——比不改更糟。
+# 实测症状：bat 自己 echo 的中文正常，Python 打出来的菜单全是"□□□"。
+#
+# 结论：不要动 encoding。只允许加 errors="replace"，避免极端字符把程序打崩。
+# ---------------------------------------------------------------------------
 try:
     sys.stdout.reconfigure(errors="replace")
     sys.stderr.reconfigure(errors="replace")
@@ -92,9 +107,12 @@ MENU_START = "// ===== [AGY_ZH_MENU_START] 原生菜单翻译 ====="
 MENU_END = "// ===== [AGY_ZH_MENU_END] ====="
 TRAY_START = "// ===== [AGY_ZH_TRAY_START] 托盘菜单翻译 ====="
 TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
+CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
+CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.11"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.28.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2）
+TOOL_VERSION = "v1.14"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.31.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2）
+EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 
 # --- 检查更新（全程序唯一的联网入口，仅当用户主动点「检查更新」才会触发）---
@@ -148,8 +166,61 @@ def log(msg, ok=False, warn=False):
     print(_fit_glyphs(f"{tag} {msg}"), flush=True)
 
 
-def die(msg, code=1):
+# 文件名必须是纯 ASCII：中文文件名在英文代码页(437)的控制台里显示成乱码，
+# 用户根本找不到这个文件，也就没法发给我们。中文说明写在文件内容里。
+FAIL_LOG_NAME = "hanhua_error_log.txt"
+
+
+def _collect_env_snapshot():
+    """收集一份最小但够用的环境快照。用户描述不清时，全靠这份东西定位。"""
+    import platform
+    lines = []
+    try:
+        lines.append(f"时间      : {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"工具版本  : {TOOL_VERSION}")
+        lines.append(f"系统      : {platform.platform()}")
+        lines.append(f"架构      : {platform.machine()} / Python {platform.python_version()}")
+        lines.append(f"解释器    : {sys.executable}")
+        lines.append(f"输出编码  : {getattr(sys.stdout, 'encoding', '?')}")
+        lines.append(f"工作目录  : {os.getcwd()}")
+        lines.append(f"脚本目录  : {SCRIPT_DIR}")
+        lines.append(f"Python路径: {os.environ.get('PATH', '')[:600]}")
+    except Exception as e:
+        lines.append(f"(环境快照收集失败: {e})")
+    return lines
+
+
+def _write_fail_log(msg):
+    """失败时落一份日志到脚本目录。写不下去就算了，绝不能因为写日志再抛异常。"""
+    try:
+        body = ["=== Antigravity 一键汉化 · 失败记录 ===", ""]
+        body += _collect_env_snapshot()
+        body += ["", "--- 错误信息 ---", str(msg), ""]
+        text = "\n".join(body)
+        for d in (SCRIPT_DIR, tempfile.gettempdir()):
+            try:
+                p = os.path.join(d, FAIL_LOG_NAME)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(text)
+                print(_fit_glyphs(f"[·] 已写入失败日志：{p}"), flush=True)
+                return p
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def die(msg, code=1, log=True):
+    """中止程序。
+
+    log=False 用于"预期内的拒绝"：锁冲突（用户重复双击）、用户主动取消、
+    检测到进程让用户手动处理。这些都不是故障，不该在目录里留下"失败记录"，
+    否则用户看到 hanhua_error_log.txt 会误以为程序坏了。
+    """
     print(_fit_glyphs(f"[✗] {msg}"), flush=True)
+    if log:
+        _write_fail_log(msg)
     sys.exit(code)
 
 
@@ -176,14 +247,15 @@ def acquire_lock():
         else:
             die(f"另一个汉化程序正在运行（PID {old_pid}，{int(age)} 秒前启动）。\n"
                 "  为避免文件冲突，请等它完成后重试；若确认没有其他窗口在跑，\n"
-                f"  可删除锁文件：{lock_path}")
+                f"  可删除锁文件：{lock_path}", log=False)
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(str(os.getpid()))
         return lock_path
     except FileExistsError:
-        die("另一个汉化程序刚刚启动，本次退出（重复双击无副作用，稍后重试即可）。")
+        die("另一个汉化程序刚刚启动，本次退出（重复双击无副作用，稍后重试即可）。",
+            log=False)
     except OSError as e:
         print(f"[!] 无法创建锁文件（{e}），继续执行但不防并发")
         return None
@@ -215,6 +287,10 @@ def _resources_from_given(cand):
     if not cand:
         return None
     cand = os.path.normpath(cand)
+    # 用户很可能直接把 Antigravity.exe 或 app.asar 拖进来（Windows 上尤其常见）。
+    # 此时取它所在目录再继续判断，比直接报"找不到"友好得多。
+    if os.path.isfile(cand):
+        cand = os.path.dirname(cand)
     # 先判断是否已经是 resources（含 app.asar），命中直接返回
     if os.path.isfile(os.path.join(cand, "app.asar")):
         return cand
@@ -239,7 +315,8 @@ def find_resources(override=None):
         if r:
             return r
         die(f"指定路径下未找到 app.asar：{override}\n"
-            "  可以直接指向 Antigravity.app 包本身、resources 目录，或安装根目录。")
+            "  可以指向：Antigravity 安装目录、resources 目录，\n"
+            "            或 Antigravity.exe / app.asar 文件本身。")
     if IS_WIN:
         cands = [os.path.join(p, "resources") for p in WIN_PATHS if p]
     elif IS_MAC:
@@ -1079,7 +1156,8 @@ def kill_processes(auto=False, resources_dir=None):
             print(f"[!] 检测到正在运行：{desc}")
             ans = input("    需要关闭它们才能继续，是否关闭？(Y/n)：").strip().lower()
             if ans not in ("", "y", "yes"):
-                die("已取消。请手动退出 Antigravity 后重试（菜单栏图标 → 退出）。")
+                die("已取消。请手动退出 Antigravity 后重试（菜单栏图标 → 退出）。",
+                    log=False)
         log(f"正在关闭进程：{desc}")
         for pid, _ in procs:
             _safe_run(["kill", "-TERM", str(pid)])
@@ -1114,7 +1192,7 @@ def kill_processes(auto=False, resources_dir=None):
         die("检测到可能相关的进程：" + ", ".join(running) + "\n"
             "  请手动退出 Antigravity 后重新运行本工具。\n"
             "  （本工具在 Linux 上不自动结束进程：无法精确区分同名进程，"
-            "以免误杀你其它软件的 language server。）")
+            "以免误杀你其它软件的 language server。）", log=False)
 
     # Windows：枚举进程的可执行路径，只处理 Antigravity 目录下的
     marker = (resources_dir or "").replace("/", "\\").lower()
@@ -1152,7 +1230,7 @@ def kill_processes(auto=False, resources_dir=None):
         print(f"[!] 检测到正在运行：{desc}")
         ans = input("    需要关闭它们才能继续，是否关闭？(Y/n)：").strip().lower()
         if ans not in ("", "y", "yes"):
-            die("已取消。请手动退出 Antigravity 后重试。")
+            die("已取消。请手动退出 Antigravity 后重试。", log=False)
     log(f"正在关闭进程：{desc}")
     for p in targets:
         _safe_run(["taskkill", "/F", "/PID", str(p["ProcessId"])])
@@ -1882,6 +1960,95 @@ def build_tray_block():
             f"{TRAY_END}\n")
 
 
+# ----------------------------------------------------------------------------
+# 原生右键菜单（Electron Menu）
+# ----------------------------------------------------------------------------
+# 背景：Antigravity 2.31.x 的右键菜单走 `window.electronNative.showContextMenu(items)`
+# → 主进程 `Menu.buildFromTemplate` → OS 原生弹窗。它不产生任何 DOM 节点，
+# DOM 引擎（preload 里的 MutationObserver）根本看不到，所以整块菜单保持英文。
+# 2.31.2 实测：右键会话行后 DOM 中 .agy-overlay 数量为 0，而屏幕上确实弹出菜单，
+# 且菜单项无图标、快捷键右对齐 —— 与 renderer 侧 `xYa()` 把项目压成
+# {id,label,type,checked,disabled,accelerator}（**丢掉 icon**）后再 IPC 完全吻合。
+#
+# 修法：在 preload 暴露 `electronNative` 之前包一层，只翻译 label，
+# id / disabled / 点击回调 / 快捷键一律原样透传（主进程正是用 id 回传选中的项）。
+CTX_ORIG_EXPOSE = "electron_1.contextBridge.exposeInMainWorld('electronNative', electronNativeAPI);"
+CTX_HOOKED_EXPOSE = ("electron_1.contextBridge.exposeInMainWorld('electronNative', "
+                     "(typeof __AGY_ZH_WRAP_NATIVE__ === 'function' "
+                     "? __AGY_ZH_WRAP_NATIVE__(electronNativeAPI) : electronNativeAPI));")
+
+
+def build_ctxmenu_block():
+    # 注意：这里必须用 function 声明。注入块在文件末尾，而 expose 调用在文件前面，
+    # 只有声明才会被提升；写成 const/var 会在 expose 时拿到 undefined。
+    return f"""
+{CTX_START}
+// 把菜单项的 label 过一遍词典；失败一律返回原值，绝不让汉化弄坏右键菜单。
+function __AGY_ZH_CTX_LABEL__(label) {{
+    try {{
+        if (typeof window !== 'undefined' && typeof window.__AGY_ZH_MENU_LABEL__ === 'function') {{
+            var out = window.__AGY_ZH_MENU_LABEL__(label);
+            return typeof out === 'string' ? out : label;
+        }}
+    }} catch (e) {{ /* 翻译失败保留英文 */ }}
+    return label;
+}}
+// 深拷贝一层：只换 label，其余字段（含函数、React 元素、子菜单）原样保留。
+// 不原地改的原因：同一份 items 数组还可能被网页版菜单复用，改原对象会污染调用方。
+function __AGY_ZH_CTX_ITEMS__(items) {{
+    if (!Array.isArray(items)) return items;
+    var out = [];
+    for (var i = 0; i < items.length; i++) {{
+        var it = items[i];
+        if (!it || typeof it !== 'object') {{ out.push(it); continue; }}
+        var copy = {{}};
+        for (var k in it) {{
+            if (Object.prototype.hasOwnProperty.call(it, k)) copy[k] = it[k];
+        }}
+        if (typeof it.label === 'string' && it.label) copy.label = __AGY_ZH_CTX_LABEL__(it.label);
+        if (Array.isArray(it.items)) copy.items = __AGY_ZH_CTX_ITEMS__(it.items);
+        if (Array.isArray(it.submenu)) copy.submenu = __AGY_ZH_CTX_ITEMS__(it.submenu);
+        out.push(copy);
+    }}
+    return out;
+}}
+function __AGY_ZH_WRAP_NATIVE__(api) {{
+    try {{
+        if (!api || typeof api !== 'object' || typeof api.showContextMenu !== 'function') return api;
+        var wrapped = {{}};
+        for (var k in api) {{
+            if (Object.prototype.hasOwnProperty.call(api, k)) wrapped[k] = api[k];
+        }}
+        wrapped.showContextMenu = function (items) {{
+            var payload = items;
+            try {{ payload = __AGY_ZH_CTX_ITEMS__(items); }} catch (e) {{ payload = items; }}
+            return api.showContextMenu(payload);
+        }};
+        return wrapped;
+    }} catch (e) {{
+        return api;
+    }}
+}}
+{CTX_END}
+"""
+
+
+def patch_ctx_menu(path, report):
+    """给 preload 挂上原生右键菜单翻译钩子（幂等）"""
+    c = open(path, encoding='utf-8').read()
+    c = strip_block(c, CTX_START, CTX_END)
+    if CTX_HOOKED_EXPOSE in c:
+        report.append(("已生效", "preload.js 原生右键菜单挂钩", True))
+    elif CTX_ORIG_EXPOSE in c:
+        c = c.replace(CTX_ORIG_EXPOSE, CTX_HOOKED_EXPOSE)
+        report.append(("替换", "preload.js 原生右键菜单挂钩（electronNative 暴露点）", True))
+    else:
+        report.append(("未命中", "preload.js 原生右键菜单挂钩（官方结构变动，右键菜单可能保持英文）", False))
+    c = c.rstrip("\n") + "\n" + build_ctxmenu_block()
+    open(path, 'w', encoding='utf-8', newline='').write(c)
+
+
+
 # 菜单挂钩点（hooked → original 成对，用于幂等还原）
 def menu_hook_pairs():
     set_hooked = ("{ if (typeof __AGY_ZH_MENU_TRANSLATE__ === 'function') "
@@ -1922,11 +2089,16 @@ def patch_all(extract_dir, engine_code, data, report):
                                        "__AGY_ZH_DATA__JSON__").replace(
                                            "__AGY_ZH_DATA__JSON__", data_json)
 
-    # ---- 1. dist/preload.js：DOM 翻译引擎 ----
+    # ---- 1. dist/preload.js：DOM 翻译引擎 + 原生右键菜单 ----
     p = os.path.join(extract_dir, "dist", "preload.js")
     if os.path.isfile(p):
         wr(p, inject_engine(rd(p), engine_final, data_json))
         report.append(("注入", "dist/preload.js 界面翻译引擎", True))
+        # 引擎块之后追加右键菜单钩子；两者在同一文件，钩子里的函数声明会被提升，
+        # 所以 exposeInMainWorld 那行在文件更前面也能取到。
+        patch_ctx_menu(p, report)
+        if p not in modified:
+            modified.append(p)
 
     # ---- 2. dist/ideInstall/wizardPreload.js：安装向导 ----
     p = os.path.join(extract_dir, "dist", "ideInstall", "wizardPreload.js")
@@ -2150,7 +2322,7 @@ def cmd_apply(resources, npx, auto_yes=False):
         log("仍可继续（注入是幂等的），但将无法一键还原英文。", warn=True)
         if not auto_yes:
             if input("    是否继续？(y/N)：").strip().lower() not in ("y", "yes"):
-                die("已取消。")
+                die("已取消。", log=False)
 
     # 2. 关闭进程（按路径过滤，只杀 Antigravity 自己的）
     kill_processes(auto=auto_yes, resources_dir=resources)
@@ -2798,17 +2970,36 @@ def cmd_check_update(auto_yes=False):
 # ----------------------------------------------------------------------------
 # 入口
 # ----------------------------------------------------------------------------
+def _say_goodbye():
+    """明确告诉用户这是正常结束，不是崩溃。
+
+    网友反馈里最常见的误判就是"按了个键，窗口就没了=闪退"。窗口确实会在按键后
+    关闭（Windows 的 pause 就是这么设计的），但必须让人看懂这是正常收尾。
+    bat 那边因为编码限制只能写英文，所以这句中文在这里补上。
+    """
+    print("\n  已退出。窗口会在你按任意键后关闭——这是正常结束，不是闪退。")
+    print("  想再操作一次，重新双击 一键汉化.bat 即可。")
+
+
 def menu_pause():
     """操作结束后停一下让用户看结果；回车回主菜单，输入 0 直接退出本程序。
 
     注意：这里以前只把输入丢掉、不判断内容，导致提示写着"输入 0 可退出"但输 0 照样
     回主菜单，用户以为程序卡住了。现在真按提示执行。
+
+    另外，Ctrl+C / 输入流断开时**不能静默返回 0**：批处理看到 0 会当成"全部成功"
+    直接关窗，用户什么都没看清就闪退。这里统一用 130 表示"用户主动中断"，
+    由 .bat 单独识别并给出说明。
     """
     try:
         ans = input("\n  按回车返回主菜单（输入 0 直接退出）...").strip()
     except (EOFError, KeyboardInterrupt):
-        raise SystemExit(0)
+        # 这里操作本身已经做完了，只是"回菜单"这一步被打断，说"已退出"即可，
+        # 不要吓唬成"中断"，免得用户以为刚才的汉化没成功。
+        print("\n  已退出。")
+        raise SystemExit(EXIT_CANCELLED)
     if ans == "0":
+        _say_goodbye()
         raise SystemExit(0)
 
 
@@ -2866,7 +3057,10 @@ def main():
             try:
                 c = input("请选择：").strip()
             except (EOFError, KeyboardInterrupt):
-                return
+                # 不能直接 return：退出码 0 会让 .bat 判定"全部成功"立刻关窗，
+                # 用户看到的就是"随便按一下窗口就没了"。统一按中断处理。
+                print("\n  已中断（Ctrl+C 或输入已关闭）。软件没有被改动。")
+                raise SystemExit(EXIT_CANCELLED)
             if c == "1":
                 npx = check_env()
                 lock = acquire_lock()
@@ -2897,6 +3091,7 @@ def main():
                 menu_pause()
                 continue
             if c == "0":
+                _say_goodbye()
                 return
             print("\n  输入无效，请重新选择（1 / 2 / 3 / 4 / 5 / 0）。")
     else:
@@ -2904,4 +3099,31 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 统一兜底：用户在哪一步按 Ctrl+C、或出现没预料到的异常，
+    # 都不许把 Python traceback 甩到用户脸上（那是"闪退/坏了"观感的最大来源）。
+    # 一律翻译成一句人话 + 一份失败日志 + 明确的退出码。
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        print("\n  已中断（Ctrl+C 或输入已关闭）。软件没有被改动。")
+        sys.exit(EXIT_CANCELLED)
+    except Exception as e:
+        # 把最常见的 Windows 文件错误翻译成人话。技术细节仍然完整写进日志，
+        # 但屏幕上不能甩 "WinError 32" 这种术语——网友看不懂，只会觉得程序坏了。
+        winerr = getattr(e, "winerror", None)
+        human = None
+        if winerr == 32:
+            human = ("文件正被其他程序占用（最常见：Antigravity 没完全退出，或杀毒软件正在扫描）。\n"
+                     "  请彻底退出 Antigravity（包括右下角托盘图标）后重新运行本程序；\n"
+                     "  若装了杀毒软件，等十几秒再试一次。\n"
+                     "  本次没有改动你的 Antigravity，可以放心重试。")
+        elif winerr == 5:
+            human = ("没有权限修改 Antigravity 的安装目录。\n"
+                     "  请右键本程序 → 选择「以管理员身份运行」，然后重试。\n"
+                     "  本次没有改动你的 Antigravity，可以放心重试。")
+        msg = human or f"程序异常终止：{type(e).__name__}: {e}"
+        print(_fit_glyphs(f"[✗] {msg}"))
+        _write_fail_log(traceback.format_exc())
+        sys.exit(1)

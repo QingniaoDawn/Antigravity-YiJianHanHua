@@ -1,5 +1,5 @@
 // =============================================================================
-// Antigravity 一键汉化引擎 v1.10
+// Antigravity 一键汉化引擎 v1.11
 // 设计要点：
 //   - 纯 Web API（无 require/network），preload 沙箱环境可用
 //   - 多级瀑布翻译管道 + O(1) 缓存
@@ -79,6 +79,17 @@
     // 时长归一化：配额提示里的 "3h54m47s" 要变成「3小时54分47秒」。
     // 只在已含中文的短文本里跑，避免动到代码/标识符。
     var DUR_RULES = [
+        // 组合长格式优先：「4 days, 12 hours」→「4 天 12 小时」（顺带吃掉中间的逗号）。
+        [/(\d+)\s*days?\s*,\s*(\d+)\s*hours?/gi, function (m, a, b) { return a + '天' + b + '小时'; }],
+        [/(\d+)\s*hours?\s*,\s*(\d+)\s*minutes?/gi, function (m, a, b) { return a + '小时' + b + '分'; }],
+        [/(\d+)\s*minutes?\s*,\s*(\d+)\s*seconds?/gi, function (m, a, b) { return a + '分' + b + '秒'; }],
+        // 长格式单位："4 days, 12 hours" → 「4 天，12 小时」。放最前面，避免被下面的
+        // 短格式规则按单字母误判。
+        [/(\d+)\s*weeks?\b/gi, function (m, a) { return a + '周'; }],
+        [/(\d+)\s*days?\b/gi, function (m, a) { return a + '天'; }],
+        [/(\d+)\s*hours?\b/gi, function (m, a) { return a + '小时'; }],
+        [/(\d+)\s*minutes?\b/gi, function (m, a) { return a + '分'; }],
+        [/(\d+)\s*seconds?\b/gi, function (m, a) { return a + '秒'; }],
         [/(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s/g, function (m, a, b, c) { return a + '小时' + b + '分' + c + '秒'; }],
         [/(\d+)\s*h\s*(\d+)\s*m/g, function (m, a, b) { return a + '小时' + b + '分'; }],
         [/(\d+)\s*m\s*(\d+)\s*s/g, function (m, a, b) { return a + '分' + b + '秒'; }],
@@ -115,11 +126,19 @@
         return s;
     }
 
+    // 独立成节点的英文标点 → 中文标点。
+    // 为什么需要：页面文案大量由 JSX 分段拼接（如 "…Learn more" + "."），标点会单独成为一个
+    // 文本节点；下面的 LETTER_RE 门槛会把纯标点直接放行，于是中文句子里残留英文句号。
+    // 用对象查表是 O(1)，不引入正则开销；按键不存在时几乎无成本。
+    var PUNCT_MAP = { '.': '。', ',': '，', ';': '；', ':': '：', '?': '？', '!': '！' };
+
     // ---------------- 3. 翻译管道（多级瀑布，逐级短路） ----------------
     function translateString(text) {
         if (!text || typeof text !== 'string') return text;
         var trimmed = text.trim();
         if (!trimmed) return text;
+        var pm = PUNCT_MAP[trimmed];
+        if (pm !== undefined) return text.replace(trimmed, pm);
         if (!LETTER_RE.test(trimmed)) return text; // 纯中文/数字/标点：零开销返回（收敛关键）
 
         var hit = cacheGet(trimmed);
@@ -131,6 +150,25 @@
         out = fixMacKeys(out);
         cachePut(trimmed, out);
         return text.replace(trimmed, out);
+    }
+
+    // ---------------- 3.1 原生菜单标签翻译 ----------------
+    // 原生右键菜单（Electron Menu）不经过 DOM，界面引擎根本看不到它的文案，
+    // 所以由 preload 在送进主进程之前调用这里。与 translateString 的区别：
+    //   - 只走「精确 / 大小写 / 空白归一 / 尾部标点 / 正则」五级，**不做核心词逐词替换**
+    //   - 单独一个缓存键前缀，避免和正文翻译结果互相污染
+    // 代价是极端动态的标签（模型名、文件名等）保持英文——这比半截中文更好读。
+    var LABEL_CACHE_PREFIX = 'M\u0001';
+    function translateLabel(text) {
+        if (!text || typeof text !== 'string') return text;
+        var trimmed = text.trim();
+        if (!trimmed || !LETTER_RE.test(trimmed)) return text;
+        var ck = LABEL_CACHE_PREFIX + trimmed;
+        var hit = cacheGet(ck);
+        if (hit !== undefined) return text.replace(trimmed, function () { return hit; });
+        var out = normalizeDates(pipeline(trimmed, true));
+        cachePut(ck, out);
+        return text.replace(trimmed, function () { return out; });
     }
 
     // ---------------- macOS 键位修正 ----------------
@@ -182,7 +220,7 @@
         return out;
     }
 
-    function pipeline(t) {
+    function pipeline(t, strict) {
         var j;
         // 0. 豁免清单（高频时钟等动态文本，翻译反而添乱）
         for (j = 0; j < EXEMPT.length; j++) {
@@ -221,7 +259,9 @@
             }
         }
         // 7. 核心词分词（仅 ≤3 词的短文本且不含中文，宁缺毋滥）
-        if (!CJK_RE.test(t) && CORE_UNION) {
+        //    strict=true 时整级跳过：原生菜单标签必须是整句精确译文，
+        //    逐词替换会产出「复制 Trajectory ID」这种中英混杂的菜单项。
+        if (!strict && !CJK_RE.test(t) && CORE_UNION) {
             var words = t.split(/\s+/);
             if (words.length <= 3) {
                 // 技术串保护：无空格且含 URL / 路径 / 标识符特征字符时，放弃逐词替换。
@@ -289,6 +329,13 @@
             element.getAttribute('contenteditable') === 'true' ||
             element.getAttribute('role') === 'textbox' ||
             element.getAttribute('data-lexical-editor') === 'true')) return true;
+
+        // 2.5 用户消息操作条放行：时间戳（"19m ago"）和复制/编辑按钮是界面元素，
+        //     不是用户输入的内容；但它挂在 user-input-step / data-message-id 子树里，
+        //     按下面的规则会被整块跳过，导致这条时间戳长期保持英文。
+        //     只放行这一小块，用户正文仍由 user-input-step 保护。
+        //     放在输入框判断之后：输入框/富文本的物理免疫不能被这里破例。
+        if (element.closest && element.closest('[data-testid="user-message-actions"]')) return false;
 
         // 3. 斜杠命令与 @提及菜单保护（防止 /boost 等命令词被翻译），
         //    仅白名单分类（Rules/对话/目录 等）放行
@@ -382,7 +429,18 @@
             }
         } else if (node.nodeType === 1) { // 元素节点
             translateAttrs(node); // 提示属性优先翻译，不受跳过区限制
-            if (shouldSkipNode(node)) return;
+            if (shouldSkipNode(node)) {
+                // 用户消息整棵子树默认跳过（保护用户原文），但右上角那条操作条
+                //（时间戳 / 复制 / 编辑）属于界面元素。剪枝发生在 user-input-step 这一层，
+                // 子节点的白名单没机会执行，所以在这里单独把操作条捞出来翻。
+                try {
+                    if (node.getAttribute && node.getAttribute('data-testid') === 'user-input-step') {
+                        var bar = node.querySelector('[data-testid="user-message-actions"]');
+                        if (bar) translateNode(bar);
+                    }
+                } catch (_) {}
+                return;
+            }
             if (node.shadowRoot) {
                 observeRoot(node.shadowRoot);
                 translateNode(node.shadowRoot);
@@ -611,9 +669,13 @@
         startObserver();
     }
 
+    // 原生菜单翻译入口：localize.py 注入的 preload 钩子会调用它。
+    // 用 try/catch 兜底——引擎就算初始化异常，也不能让宿主失去右键菜单。
+    try { window.__AGY_ZH_MENU_LABEL__ = translateLabel; } catch (_) {}
+
     // 调试句柄（F12 控制台可用 window.__AGY_ZH_DEBUG__.stats() 查看运行状态）
     window.__AGY_ZH_DEBUG__ = {
-        version: '1.10.0',
+        version: '1.11.0',
         stats: function () {
             return {
                 active: true,
@@ -625,6 +687,7 @@
             };
         },
         rescan: safeScan,
-        translate: translateString
+        translate: translateString,
+        translateLabel: translateLabel
     };
 })();
