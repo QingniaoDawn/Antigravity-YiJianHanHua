@@ -1496,13 +1496,26 @@ def _mac_read_designated_requirement(app_bundle):
         return ""
 
 
+def _mac_dr_line(dr_text):
+    """从 `codesign -d -r-` 的输出里取出 designated requirement 那一行。
+
+    为什么单独抽出来：codesign 的输出里还会有 Executable= / Identifier= /
+    Format= 等行，直接拿最后一行或整体字符串判断都可能误判。
+    只认以 `designated =>` 开头的行；没有这一行就返回空（视为「没有可用身份」）。"""
+    for ln in (dr_text or "").splitlines():
+        s = ln.strip()
+        if s.startswith("designated =>"):
+            return s
+    return ""
+
+
 def _mac_dr_is_stable(dr_text):
     """DR 是否已经摆脱 cdhash 锚定（即「跨版本稳定」）。
-    ad-hoc 默认生成的 DR 一定含 cdhash；我们写入的稳定 DR 不含。"""
-    low = (dr_text or "").lower()
-    if not low:
+    只看 designated 那一行；ad-hoc 默认生成的 DR 一定含 cdhash。"""
+    line = _mac_dr_line(dr_text).lower()
+    if not line:
         return False
-    return "cdhash" not in low
+    return "cdhash" not in line
 
 
 def _mac_nested_code_items(app_bundle):
@@ -1693,29 +1706,32 @@ def _mac_resign_inner(app_bundle, ent, use_sudo):
         log("嵌套组件签名完成", ok=True)
 
     # 4) 最后签主包（带 entitlements + 稳定签名要求）
-    #    -r 写入「只锚定 bundle id」的 designated requirement，
+    #    -r 写入「只锚定签名标识」的 designated requirement，
     #    否则 ad-hoc 默认生成 cdhash 锚定的身份，官方应用内更新必然被拒。
     dr = _mac_update_friendly_requirement(app_bundle)
     log("正在签名主应用包（带权限清单）...")
+
+    # 4a) 先试普通权限。绝大多数情况下 /Applications 已有写权限。
     ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=False, requirements=dr)
-    if not ok and dr:
-        # 老系统/异常环境可能不接受 --requirements：立刻回退普通重签，
-        # 「App 能打开」的优先级高于「能更新」。
-        log(f"稳定签名要求写入失败，回退普通重签（应用内更新将不可用）：{err}", warn=True)
-        dr = None
-        ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=False)
+
+    # 4b) 失败 → 先判断是不是权限问题，**保持 DR** 走管理员重试。
+    #     这里不能先回退：一旦把 dr 置空，sudo 重试就不带稳定身份了，
+    #     结果是「签名成功但更新能力被静默丢掉」。
     if not ok and use_sudo and IS_MAC:
         log("需要管理员权限，正在弹出系统密码框...", warn=True)
         ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=True, requirements=dr)
-        if not ok and dr:
-            log(f"稳定签名要求写入失败，回退普通重签（应用内更新将不可用）：{err}", warn=True)
-            dr = None
-            ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=True)
+
+    # 4c) 带 DR 仍然失败，才判定为「系统不接受 --requirements」，回退普通重签。
+    if not ok and dr:
+        log(f"稳定签名要求写入失败，回退普通重签（应用内更新将不可用）：{err}", warn=True)
+        dr = None
+        ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=use_sudo and IS_MAC)
+
     if not ok:
         log(f"主包签名失败：{err}", warn=True)
         return False
 
-    # 4b) 校验（--deep 在校验场景下是官方认可的用法）
+    # 4d) 校验（--deep 在校验场景下是官方认可的用法）
     valid, msg = _mac_verify_signature(app_bundle)
     if not valid and use_sudo and IS_MAC:
         ok2, _ = _mac_sign_once(app_bundle, "-", ent, sudo=True, requirements=dr)
@@ -1729,15 +1745,18 @@ def _mac_resign_inner(app_bundle, ent, use_sudo):
                 dr = None
                 valid, msg = _mac_verify_signature(app_bundle)
 
-    # 4c) 回读签名身份（放在最终签名之后，避免报告过期状态）
+    # 4e) 回读签名身份（放在最终签名之后，避免报告过期状态）
     dr_text = _mac_read_designated_requirement(app_bundle)
+    dr_line = _mac_dr_line(dr_text)
     if _mac_dr_is_stable(dr_text):
         log("签名身份已固定为 bundle id（官方应用内自动更新可用）", ok=True)
+        if dr_line:
+            log(f"  当前签名身份：{dr_line[:160]}")
     else:
         log("签名身份仍是 ad-hoc 单版本锚定（cdhash）——"
             "官方应用内自动更新会被拒绝，这是可预期的降级", warn=True)
-        if dr_text:
-            log(f"  当前签名身份：{dr_text.splitlines()[-1][:160]}", warn=True)
+        if dr_line:
+            log(f"  当前签名身份：{dr_line[:160]}", warn=True)
 
     # 临时文件清理由外层 _mac_resign 的 finally 统一负责
     if valid:
@@ -1884,6 +1903,11 @@ def mac_status_extra(resources_dir):
     """macOS 状态检查追加项：签名健康度 + 更新能力"""
     if not IS_MAC:
         return
+    # 没装 codesign 时后面所有检查都会失败，先给一条准确的提示，
+    # 避免用户把「工具缺失」误读成「汉化坏了」。
+    if not _codesign_available():
+        log("代码签名：无法检查（未安装 codesign，请执行 xcode-select --install）", warn=True)
+        return
     bundle = find_app_bundle(resources_dir)
     if not bundle:
         return
@@ -2006,11 +2030,24 @@ fi
 if [ "$SIGN_OK" -eq 0 ]; then
   codesign --force --sign - --entitlements "$ENT" "$APP" || FAIL=$((FAIL+1))
 fi
-rm -f "$ENT"
 
 # ---- 5. 校验 ----
+# 注意：$ENT 必须留到校验之后。带稳定身份签完若校验不过，
+# 还要用它回退普通重签；提前删掉会让回退变成裸签。
 echo "[4/4] 校验签名..."
+VERIFY_OK=0
 if codesign --verify --deep --strict "$APP" 2>/dev/null; then
+  VERIFY_OK=1
+elif [ "$SIGN_OK" -eq 1 ]; then
+  echo "  [!] 带稳定身份校验未通过，回退普通重签..."
+  if codesign --force --sign - --entitlements "$ENT" "$APP" 2>/dev/null \
+     && codesign --verify --deep --strict "$APP" 2>/dev/null; then
+    VERIFY_OK=1
+  fi
+fi
+rm -f "$ENT"
+
+if [ "$VERIFY_OK" -eq 1 ]; then
   DR="$(codesign -d -r- "$APP" 2>&1 | tr -d '\000')"
   echo ""
   echo "=============================================================="
@@ -2032,9 +2069,12 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
   exit 0
 else
   echo ""
-  echo "  [!] 签名校验仍未通过。可打开「终端」手动执行："
+  echo "  [!] 签名校验仍未通过。"
+  echo "      请先重新运行一次「一键汉化」——它会重新导出原包权限清单再签，"
+  echo "      比手动裸签安全（裸签会丢 entitlements，App 可能启动即崩）。"
+  echo "      若仍失败，可打开「终端」手动执行排查："
   echo "      sudo xattr -cr \"$APP\""
-  echo "      sudo codesign --force --sign - \"$APP\""
+  echo "      codesign -d --entitlements - --xml \"$APP\"   # 确认权限清单是否还在"
   echo ""
   read -r -p "按回车键关闭窗口..." _
   exit 1
