@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.12（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.15（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -24,7 +24,10 @@ Antigravity 一键汉化 v1.12（Windows / macOS 双平台）
     2. 进程管理：按完整可执行路径精确匹配，绝不误杀同名进程
     3. 代码签名：改 asar 会使 Apple 签名失效，必须重签，否则 App 打不开
        （Apple Silicon 上直接启动失败）。重签采用 Apple 推荐的分层方式：
-       嵌套组件裸签 → 主包带 entitlements 签。全程需管理员密码。
+       嵌套组件裸签 → 主包带 entitlements 签。
+       主包额外用 -r 写入稳定的代码身份（只锚定签名标识），否则 ad-hoc
+       默认身份锚定在二进制哈希上，Squirrel 会拒绝官方应用内更新。
+       写入失败自动回退普通重签；全程需管理员密码。
 """
 import hashlib
 import json
@@ -110,7 +113,7 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.14"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.15"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.31.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
@@ -1390,6 +1393,118 @@ def _mac_verify_signature(app_bundle):
         return False, f"校验异常：{e}"
 
 
+# ----------------------------------------------------------------------------
+# 代码签名身份（designated requirement）
+# ----------------------------------------------------------------------------
+# 这是 Mac 端「汉化后还能不能更新」的唯一开关，改动前务必读完这段。
+#
+# 机制：
+#   Squirrel.Mac（Electron 的 macOS 更新组件）在安装更新前，会先取**当前正在
+#   运行的这个 app** 的 designated requirement（DR，代码身份），再用它去校验
+#   下载回来的新包；新包必须满足这条 DR，否则直接拒绝安装。
+#
+#   默认情况下，`codesign --force --sign -`（ad-hoc 临时签名）生成的 DR 是
+#   `cdhash H"..."` —— 也就是「只认这一个人二进制文件的哈希」。
+#   官方新版的哈希必然不同，所以 ad-hoc 重签过的 app **永远不可能**通过官方的
+#   应用内自动更新。这不是脚本写错，是签名机制本身决定的。
+#
+# 解法：
+#   重签时用 `--requirements` 显式写入一条只锚定 bundle id 的 DR：
+#       designated => identifier "com.google.antigravity"
+#   这样当前 app 满足自己（identifier 一致，codesign --verify 仍通过），
+#   官方新版（Google 签名）也满足（identifier 一致），Squirrel 就会放行。
+#
+# 代价（必须如实告知用户）：
+#   DR 不再校验发布者证书，只校验 bundle id。安全性由更新通道的 HTTPS 与
+#   sha512 校验承担。这比 cdhash 宽，但仍然只接受「同一个应用」。
+#
+# 兼容性：
+#   旧版 macOS 或异常环境下 `--requirements` 可能不被接受。因此调用方必须
+#   准备好「写入失败 → 回退普通重签」的降级路径，并在重签后回读 DR 确认。
+
+def _mac_bundle_identifier(app_bundle):
+    """读取 .app 的 CFBundleIdentifier。失败返回 None。
+    优先用 plutil（系统自带，最可靠），再用 plistlib 兜底。"""
+    plist = os.path.join(app_bundle, "Contents", "Info.plist")
+    if not os.path.isfile(plist):
+        return None
+    try:
+        r = subprocess.run(["plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", plist],
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=30)
+        if r.returncode == 0:
+            bid = (r.stdout or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9._-]{1,200}", bid):
+                return bid
+    except Exception:
+        pass
+    try:
+        import plistlib
+        with open(plist, "rb") as f:
+            d = plistlib.load(f)
+        bid = str(d.get("CFBundleIdentifier") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9._-]{1,200}", bid):
+            return bid
+    except Exception:
+        pass
+    return None
+
+
+def _mac_signing_identifier(app_bundle):
+    """读取「当前签名」里的 Identifier（codesign -d --verbose=4 的 Identifier= 行）。
+    必须在重签**之前**调用：重签后读到的就是新签名的标识了。
+
+    为什么优先用它而不是 Info.plist 的 CFBundleIdentifier：
+    两者通常相同，但官方若显式指定过 --identifier，就可能不同；
+    用签名里的真实标识才能保证 DR 同时匹配「当前 app」和「官方新包」。"""
+    try:
+        r = subprocess.run(["codesign", "-d", "--verbose=4", app_bundle],
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=60)
+        text = (r.stderr or "") + (r.stdout or "")
+        mm = re.search(r"^Identifier=(.+)$", text, re.M)
+        if mm:
+            val = mm.group(1).strip()
+            if re.fullmatch(r"[A-Za-z0-9._-]{1,200}", val):
+                return val
+    except Exception:
+        pass
+    return None
+
+
+def _mac_update_friendly_requirement(app_bundle):
+    """构造稳定 DR（只锚定签名 identifier），返回 codesign -r 的字面量参数。
+    拿不到标识时返回 None（调用方回退普通重签）。"""
+    ident = _mac_signing_identifier(app_bundle) or _mac_bundle_identifier(app_bundle)
+    if not ident:
+        return None
+    # 只允许安全字符，避免 requirement 语法被畸形标识破坏
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", ident):
+        return None
+    return f'=designated => identifier "{ident}"'
+
+
+def _mac_read_designated_requirement(app_bundle):
+    """回读当前签名里的 designated requirement 文本。
+    codesign 把 DR 打到 stderr；失败返回空串。"""
+    try:
+        r = subprocess.run(["codesign", "-d", "-r-", app_bundle],
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=60)
+        return ((r.stderr or "") + (r.stdout or "")).strip()
+    except Exception:
+        return ""
+
+
+def _mac_dr_is_stable(dr_text):
+    """DR 是否已经摆脱 cdhash 锚定（即「跨版本稳定」）。
+    ad-hoc 默认生成的 DR 一定含 cdhash；我们写入的稳定 DR 不含。"""
+    low = (dr_text or "").lower()
+    if not low:
+        return False
+    return "cdhash" not in low
+
+
 def _mac_nested_code_items(app_bundle):
     """枚举 .app 内需要签名的嵌套代码（framework / helper app / dylib / 插件）。
 
@@ -1439,9 +1554,12 @@ def _mac_nested_code_items(app_bundle):
 
 
 def _mac_sign_once(target, identity="-", entitlements=None, sudo=False,
-                   verbose=False):
+                   verbose=False, requirements=None):
     """执行一次 codesign。sudo=True 时走 osascript 弹窗授权。
     返回 (是否成功, 输出信息)。全程参数列表形式，无 shell 拼接。
+
+    requirements: 传给 codesign -r 的字面量（以 = 开头）。仅用于主包，
+    用来写入稳定的 designated requirement，保证官方应用内更新不被拒。
 
     sudo 路径的实现要点（这里刻意不用字符串拼接 + eval）：
       把完整命令写进临时 .sh 脚本，osascript 只执行
@@ -1451,6 +1569,8 @@ def _mac_sign_once(target, identity="-", entitlements=None, sudo=False,
       含空格、单引号、$ 等特殊字符的路径都能正确执行。
     """
     cmd = ["codesign", "--force", "--sign", identity]
+    if requirements:
+        cmd += ["--requirements", requirements]
     if entitlements:
         cmd += ["--entitlements", entitlements]
     if verbose:
@@ -1572,22 +1692,52 @@ def _mac_resign_inner(app_bundle, ent, use_sudo):
     elif nested:
         log("嵌套组件签名完成", ok=True)
 
-    # 4) 最后签主包（带 entitlements）
+    # 4) 最后签主包（带 entitlements + 稳定签名要求）
+    #    -r 写入「只锚定 bundle id」的 designated requirement，
+    #    否则 ad-hoc 默认生成 cdhash 锚定的身份，官方应用内更新必然被拒。
+    dr = _mac_update_friendly_requirement(app_bundle)
     log("正在签名主应用包（带权限清单）...")
-    ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=False)
+    ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=False, requirements=dr)
+    if not ok and dr:
+        # 老系统/异常环境可能不接受 --requirements：立刻回退普通重签，
+        # 「App 能打开」的优先级高于「能更新」。
+        log(f"稳定签名要求写入失败，回退普通重签（应用内更新将不可用）：{err}", warn=True)
+        dr = None
+        ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=False)
     if not ok and use_sudo and IS_MAC:
         log("需要管理员权限，正在弹出系统密码框...", warn=True)
-        ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=True)
+        ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=True, requirements=dr)
+        if not ok and dr:
+            log(f"稳定签名要求写入失败，回退普通重签（应用内更新将不可用）：{err}", warn=True)
+            dr = None
+            ok, err = _mac_sign_once(app_bundle, "-", ent, sudo=True)
     if not ok:
         log(f"主包签名失败：{err}", warn=True)
         return False
 
-    # 5) 校验（--deep 在校验场景下是官方认可的用法）
+    # 4b) 校验（--deep 在校验场景下是官方认可的用法）
     valid, msg = _mac_verify_signature(app_bundle)
     if not valid and use_sudo and IS_MAC:
-        ok2, _ = _mac_sign_once(app_bundle, "-", ent, sudo=True)
+        ok2, _ = _mac_sign_once(app_bundle, "-", ent, sudo=True, requirements=dr)
         if ok2:
             valid, msg = _mac_verify_signature(app_bundle)
+        if not valid and dr:
+            # 带稳定身份仍校验不过：以「能打开」为最高优先级，退回普通重签
+            log("带稳定签名要求仍校验失败，回退普通重签", warn=True)
+            ok3, _ = _mac_sign_once(app_bundle, "-", ent, sudo=True)
+            if ok3:
+                dr = None
+                valid, msg = _mac_verify_signature(app_bundle)
+
+    # 4c) 回读签名身份（放在最终签名之后，避免报告过期状态）
+    dr_text = _mac_read_designated_requirement(app_bundle)
+    if _mac_dr_is_stable(dr_text):
+        log("签名身份已固定为 bundle id（官方应用内自动更新可用）", ok=True)
+    else:
+        log("签名身份仍是 ad-hoc 单版本锚定（cdhash）——"
+            "官方应用内自动更新会被拒绝，这是可预期的降级", warn=True)
+        if dr_text:
+            log(f"  当前签名身份：{dr_text.splitlines()[-1][:160]}", warn=True)
 
     # 临时文件清理由外层 _mac_resign 的 finally 统一负责
     if valid:
@@ -1731,7 +1881,7 @@ def _mac_replace_with_admin(src, dst):
 
 
 def mac_status_extra(resources_dir):
-    """macOS 状态检查追加项：签名健康度"""
+    """macOS 状态检查追加项：签名健康度 + 更新能力"""
     if not IS_MAC:
         return
     bundle = find_app_bundle(resources_dir)
@@ -1743,6 +1893,18 @@ def mac_status_extra(resources_dir):
     else:
         log(f"代码签名：已失效（{msg}）", warn=True)
         log("  修复：选 1 重新汉化，或运行同目录下的「修复签名.command」。", warn=True)
+    # 签名身份决定「官方应用内更新」能不能用，单独报一行
+    dr_text = _mac_read_designated_requirement(bundle)
+    if not dr_text:
+        log("更新能力：无法读取签名身份（建议重新汉化一次）", warn=True)
+    elif _mac_dr_is_stable(dr_text):
+        log("更新能力：官方应用内自动更新可用（签名身份已固定）", ok=True)
+    else:
+        log("更新能力：官方应用内自动更新不可用（签名身份为单版本哈希）", warn=True)
+        log("  原因：ad-hoc 签名默认把身份锚定在当前二进制哈希上，"
+            "官方新版哈希不同 → Squirrel 拒绝安装。", warn=True)
+        log("  处理：重新运行一次汉化（v1.15+ 会写入稳定身份）；"
+            "若仍不行，请从官网下载新版覆盖安装后再汉化。", warn=True)
 
 
 _FIX_SH = r"""#!/bin/bash
@@ -1831,15 +1993,38 @@ if [ -d "$APP/Contents/Frameworks" ]; then
   done
 fi
 
-codesign --force --sign - --entitlements "$ENT" "$APP" || FAIL=$((FAIL+1))
+# 主包：优先写入「只锚定 bundle id」的签名身份，让官方应用内更新不被拒绝；
+# 写入失败则回退普通重签（App 能打开优先于能更新）
+BID="$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null)"
+SIGN_OK=0
+if [ -n "$BID" ]; then
+  if codesign --force --sign - --requirements "=designated => identifier \"$BID\"" \
+       --entitlements "$ENT" "$APP" 2>/dev/null; then
+    SIGN_OK=1
+  fi
+fi
+if [ "$SIGN_OK" -eq 0 ]; then
+  codesign --force --sign - --entitlements "$ENT" "$APP" || FAIL=$((FAIL+1))
+fi
 rm -f "$ENT"
 
 # ---- 5. 校验 ----
 echo "[4/4] 校验签名..."
 if codesign --verify --deep --strict "$APP" 2>/dev/null; then
+  DR="$(codesign -d -r- "$APP" 2>&1 | tr -d '\000')"
   echo ""
   echo "=============================================================="
   echo "  修复成功！现在可以正常打开 Antigravity 了。"
+  case "$DR" in
+    *cdhash*)
+      echo "  注意：签名身份为单版本哈希，官方「应用内自动更新」会被拒绝。"
+      echo "        更新请从官网下载新版覆盖安装，再重新汉化。"
+      ;;
+    *)
+      echo "  签名身份已固定，官方「应用内自动更新」可用。"
+      echo "        （更新后界面会变回英文，重新汉化即可）"
+      ;;
+  esac
   echo "=============================================================="
   echo ""
   open "$APP" 2>/dev/null
