@@ -2733,11 +2733,14 @@ def cmd_apply(resources, npx, auto_yes=False):
 
     # 8b. macOS：重签（Windows 下自动跳过）
     signed = mac_post_deploy(resources, auto_yes=auto_yes)
+    # 无论本次签名成功与否，都把「修复签名.command」刷新成当前版本。
+    # 旧版（v1.14 及更早）留下的脚本不会写入稳定身份，用户以后运行它
+    # 会把更新能力悄悄退回 cdhash 状态——必须覆盖掉。
+    fix = _mac_write_fix_script(resources) if IS_MAC else None
     if IS_MAC and not signed:
         print()
         print("  [!] 汉化内容已成功写入，但代码签名重签未完成。")
         print("      在此状态下 Antigravity 可能提示「应用已损坏」而无法打开。")
-        fix = _mac_write_fix_script(resources)
         if fix:
             print("      已为你生成修复脚本，双击运行即可（会弹窗索要 Mac 密码）：")
             print(f"        {fix}")
@@ -2824,6 +2827,9 @@ def cmd_restore(resources, auto_yes=False):
     if IS_MAC:
         if _codesign_available():
             mac_post_deploy(resources, auto_yes=auto_yes)
+            # 与汉化流程一致：顺手把修复脚本刷新到当前版本，
+            # 避免旧版脚本残留（它不会写稳定身份）
+            _mac_write_fix_script(resources)
         else:
             log("未找到 codesign，无法自动重签（还原后软件可能提示「已损坏」）", warn=True)
             log("  解决：安装 Xcode 命令行工具（xcode-select --install），"
