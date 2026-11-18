@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.15（Windows / macOS 双平台）
+Antigravity 一键汉化 v1.16（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -113,7 +113,7 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.15"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.16"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.31.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
@@ -1518,6 +1518,58 @@ def _mac_dr_is_stable(dr_text):
     return "cdhash" not in line
 
 
+# Mach-O 魔数（含 32/64 位、大小端与 fat 包）。只读文件头 4 字节即可判断，
+# 不依赖 file 命令，也不会被 Resources 里的同名文本文件骗到。
+_MACHO_MAGIC = {
+    b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",   # 大端 32/64
+    b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",   # 小端 32/64
+    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",   # fat（大端/小端）
+}
+
+
+def _mac_is_macho(path):
+    """按魔数判断是否 Mach-O 文件。符号链接、目录、读不了的文件一律返回 False。"""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return False
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return False
+    return head in _MACHO_MAGIC
+
+
+def _mac_framework_resource_binaries(version_dir):
+    """列出 framework 内 Resources / Libraries 下的 Mach-O。
+
+    背景：codesign 只把 Contents/Frameworks、Contents/PlugIns、Contents/XPCServices、
+    Contents/Helpers 这些固定位置当「嵌套代码」递归处理；Resources 里的可执行文件
+    只被记一条文件哈希，**不会被重签**。
+
+    Squirrel.framework/Versions/A/Resources/ShipIt 正是这种情况：
+    它保持官方签名（hardened runtime、带 Team ID），却要加载被我们改成 ad-hoc 的
+    Mantle/ReactiveObjC。库校验发现 Team ID 不同，dyld 直接拒绝加载：
+      Library not loaded: @rpath/Mantle.framework/Mantle（different Team IDs）
+    后果就是用户点「重启以更新」后主程序退出、ShipIt 起不来，既不安装也不重启。
+
+    这些文件必须**先于 framework 本体**签名：先签本体的话，CodeResources 里记录的
+    文件哈希会立刻过期，--verify 会直接报错。
+    """
+    out = []
+    skip_suffix = (".lproj", ".app", ".framework", ".xpc", ".appex")
+    for sub in ("Resources", "Libraries"):
+        root_dir = os.path.join(version_dir, sub)
+        if not os.path.isdir(root_dir):
+            continue
+        for root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if not d.endswith(skip_suffix)]
+            for fn in files:
+                p = os.path.join(root, fn)
+                if _mac_is_macho(p):
+                    out.append(p)
+    return out
+
+
 def _mac_nested_code_items(app_bundle):
     """枚举 .app 内需要签名的嵌套代码（framework / helper app / dylib / 插件）。
 
@@ -1538,10 +1590,16 @@ def _mac_nested_code_items(app_bundle):
                                 if d != "Current"]
                         if subs:
                             for s in subs:
-                                items.append(os.path.join(vers, s))
+                                vdir = os.path.join(vers, s)
+                                # Resources/Libraries 里的 Mach-O 不在 codesign 认可的
+                                # 嵌套代码位置上，必须显式先签（Squirrel 的 ShipIt 就是）
+                                items.extend(_mac_framework_resource_binaries(vdir))
+                                items.append(vdir)
                         else:
+                            items.extend(_mac_framework_resource_binaries(p))
                             items.append(p)
                     else:
+                        items.extend(_mac_framework_resource_binaries(p))
                         items.append(p)
                 elif name.endswith((".app", ".dylib", ".node", ".so")):
                     items.append(p)
@@ -1927,7 +1985,7 @@ def mac_status_extra(resources_dir):
         log("更新能力：官方应用内自动更新不可用（签名身份为单版本哈希）", warn=True)
         log("  原因：ad-hoc 签名默认把身份锚定在当前二进制哈希上，"
             "官方新版哈希不同 → Squirrel 拒绝安装。", warn=True)
-        log("  处理：重新运行一次汉化（v1.15+ 会写入稳定身份）；"
+        log("  处理：重新运行一次汉化（v1.16+ 会写入稳定身份并补签更新安装器）；"
             "若仍不行，请从官网下载新版覆盖安装后再汉化。", warn=True)
 
 
@@ -1936,8 +1994,10 @@ _FIX_SH = r"""#!/bin/bash
 # Antigravity 一键汉化 · macOS 签名修复脚本
 # ------------------------------------------------------------
 # 什么时候需要用它：
-#   汉化完成后若双击 Antigravity 提示「应用已损坏，无法打开」，
-#   说明 app.asar 被改动后代码签名失效了。运行本脚本重新签名即可。
+#   1) 汉化完成后双击 Antigravity 提示「应用已损坏，无法打开」，
+#      说明 app.asar 被改动后代码签名失效了。运行本脚本重新签名即可。
+#   2) 点「重启以更新」后应用退出、却既不安装也不重启（安装器 ShipIt 没跟着重签），
+#      运行本脚本会把它一并补签。
 #
 # 用法：双击本文件 → 输入 Mac 密码 → 等待完成
 # ============================================================
@@ -1998,6 +2058,27 @@ fi
 # Apple 要求：framework 等嵌套代码逐个签名且不得携带 entitlements
 echo "[3/4] 重新签名（如提示权限不足，请输入 Mac 密码）..."
 FAIL=0
+
+# codesign 只把 Frameworks / PlugIns / XPCServices / Helpers 这些固定位置当「嵌套代码」
+# 递归处理；Resources（和 Libraries）里的可执行文件只被记一条文件哈希，不会被重签。
+# Squirrel.framework/Versions/A/Resources/ShipIt 正是这种情况：它保持官方签名，
+# 却要加载被我们改成 ad-hoc 的 Mantle/ReactiveObjC，库校验会以「Team ID 不同」
+# 拒绝加载 —— 表现为点「重启以更新」后主程序退出、ShipIt 起不来，既不安装也不重启。
+# 所以先补签这些散落的 Mach-O，再签 framework 本体；顺序不能反，
+# 否则先签本体时记录的哈希会立刻过期，--verify 直接报错。
+sign_framework() {
+  local v="$1" sub bin
+  for sub in Resources Libraries; do
+    [ -d "$v/$sub" ] || continue
+    while IFS= read -r -d '' bin; do
+      case "$(file -b "$bin" 2>/dev/null)" in
+        *Mach-O*) codesign --force --sign - "$bin" 2>/dev/null || FAIL=$((FAIL+1)) ;;
+      esac
+    done < <(find -H "$v/$sub" -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null)
+  done
+  codesign --force --sign - "$v" 2>/dev/null || FAIL=$((FAIL+1))
+}
+
 if [ -d "$APP/Contents/Frameworks" ]; then
   for item in "$APP/Contents/Frameworks"/*.framework; do
     [ -e "$item" ] || continue
@@ -2005,10 +2086,10 @@ if [ -d "$APP/Contents/Frameworks" ]; then
       for v in "$item/Versions"/*; do
         [ -e "$v" ] || continue
         [ "$(basename "$v")" = "Current" ] && continue
-        codesign --force --sign - "$v" 2>/dev/null || FAIL=$((FAIL+1))
+        sign_framework "$v"
       done
     else
-      codesign --force --sign - "$item" 2>/dev/null || FAIL=$((FAIL+1))
+      sign_framework "$item"
     fi
   done
   for item in "$APP/Contents/Frameworks"/*.app "$APP/Contents/Frameworks"/*.dylib; do
