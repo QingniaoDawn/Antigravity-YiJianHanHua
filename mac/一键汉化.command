@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Antigravity 一键汉化 v1.16 · macOS 版
+# Antigravity 一键汉化 v1.17.1 · macOS 版
 # ------------------------------------------------------------
 # 用法：在 Finder 里双击本文件即可
 # 若双击无反应 / 提示"未验证的开发者"：
@@ -30,7 +30,7 @@ cd "$(dirname "$PY_FILE")" || exit 1
 
 echo ""
 echo "=============================================================="
-echo "  Antigravity 一键汉化 v1.16  ·  macOS 版"
+echo "  Antigravity 一键汉化 v1.17.1  ·  macOS 版"
 echo "  (首次汉化请耐心等待约 1-2 分钟，全程仅本地操作)"
 echo "=============================================================="
 echo ""
@@ -64,21 +64,16 @@ fi
 
 echo "[✓] 已找到 Python：$($PYCMD --version 2>&1)"
 
-# ---------- 检查 Node.js ----------
-# node 是硬要求（改完 JS 要做语法门禁）；npx 只负责调官方 asar 工具，
-# 缺了会由主程序自动改用内置打包器，所以这里只提醒、不阻断。
-if ! command -v node >/dev/null 2>&1; then
-  echo ""
-  echo "[错误] 未检测到 Node.js（语法校验需要 node 命令）。"
-  echo ""
-  echo "  安装方法（任选其一）："
-  echo "    1. 打开终端，粘贴执行：  brew install node"
-  echo "    2. 或从官网下载安装：https://nodejs.org/ （选 LTS 版本）"
-  echo ""
-  read -r -p "按回车键关闭..." _
-  exit 1
+# ---------- 检查 Node.js（可选，不再阻断） ----------
+# 有 node：主程序会对改完的 JS 跑 node --check，做语法级校验（最严格）
+# 没有 node：主程序自动改用内置结构自检（注入块配对 / 文件完整性），照样能完成汉化
+# npx 只负责调官方 asar 工具，缺了会自动改用内置打包器。
+if command -v node >/dev/null 2>&1; then
+  echo "[✓] 已找到 Node.js：$(node --version 2>&1)"
+else
+  echo "[!] 未检测到 Node.js：将跳过 node --check，改用内置结构自检"
+  echo "    （汉化本身不需要 Node.js；装上可获得更严格的语法校验，可选）"
 fi
-echo "[✓] 已找到 Node.js：$(node --version 2>&1)"
 if ! command -v npx >/dev/null 2>&1; then
   echo "[!] 未找到 npx，本次将直接使用内置打包器（不影响汉化结果）"
 fi

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 v1.16（Windows / macOS 双平台）
+Antigravity 一键汉化 __VERSION__（Windows / macOS 双平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -113,10 +113,11 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.16"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.31.2"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2）
+TOOL_VERSION = "v1.17.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.33.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2；2.33.0 为离线全量验证）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
+NODE_OK = False                     # check_env() 探测结果：有 node 才做 node --check，否则走结构自检
 
 # --- 检查更新（全程序唯一的联网入口，仅当用户主动点「检查更新」才会触发）---
 UPDATE_REPO = "QingniaoDawn/Antigravity-YiJianHanHua"
@@ -461,21 +462,25 @@ def probe_npm_cache():
 
 
 def check_env():
-    """检查运行环境：node（打包后语法门禁必需）+ npx（官方 asar 工具，可选）+ macOS 签名工具。
+    """检查运行环境：node（打包后语法门禁，可选）+ npx（官方 asar 工具，可选）+ macOS 签名工具。
 
-    注意 npx 只影响"用哪种方式打包"：npm 缓存不可写时会被自动跳过，
-    改走内置打包器，所以这里不因 npx 不可用而中止。
+    关于 node：2026-11-19 起不再强制。原先是硬依赖——"改完的 JS 能不能解析"
+    只有 node --check 能可靠回答。但这样把绝大多数不装开发工具的普通用户挡在门外，
+    而注入内容本身是固定的、发布前已做过完整语法校验。现在改成：
+      有 node  → 照旧跑 node --check（最严格）
+      无 node  → 走 structure_check() 结构自检（注入块配对 / 文件完整性），并明确告知
 
-    提前检查 codesign 是为了避免"汉化写进去了、App 却打不开"这种最糟的结局
-    却让用户一头雾水。"""
+    npx 只影响"用哪种方式打包"：npm 缓存不可写时会被自动跳过，改走内置打包器。
+
+    macOS 的 codesign 仍是硬依赖：不签名 App 直接打不开，没有替代方案。"""
+    global NODE_OK
     node = shutil.which("node")
     npx = shutil.which("npx")
-    if not node:
-        # node 是硬依赖：解包/打包可以自己来，但"改完的 JS 能不能解析"这道语法门禁
-        # 离不开 node --check。宁可现在说清楚，也不能把没校验的包部署进去。
-        die("未检测到 Node.js（需要 node 命令）。\n"
-            "请安装 Node.js 18+：https://nodejs.org/ 安装时勾选 Add to PATH"
-            + ("（macOS 推荐用 Homebrew：brew install node）" if IS_MAC else ""))
+    if node:
+        NODE_OK = True
+    else:
+        log("未检测到 Node.js：跳过 node --check，改用内置结构自检", warn=True)
+        log("  （汉化本身不需要 Node.js；装上它可获得更严格的语法校验，可选）", warn=True)
     if not npx:
         log("未检测到 npx，本次直接使用内置打包器（不影响汉化结果）", warn=True)
     else:
@@ -1082,7 +1087,17 @@ def pack_any(npx, src_dir, out_asar, unpack_pattern, unpack_prefixes,
 
 def node_check(files):
     """语法门禁：对所有被修改的 JS 文件做 node --check 静态校验。
-    任何异常都视为"校验不通过"——宁可中止，也不能让未校验的产物部署。"""
+    任何异常都视为"校验不通过"——宁可中止，也不能让未校验的产物部署。
+    没有 node 时返回空列表，由 structure_check() 接管（调用方负责提示差异）。"""
+    if not NODE_OK:
+        # 安全阀：只有"系统里确实没有 node"才允许降级到结构自检。
+        # 若机器上有 node 却没启用语法校验，说明调用方漏掉了 check_env()，
+        # 这种情况必须中止——否则会静默降级，把最严格的校验悄悄关掉。
+        if shutil.which("node") is not None:
+            die("内部错误：系统里有 node，但语法校验未启用（漏调 check_env）。\n"
+                "  为避免在未校验的情况下改动程序，已中止，原文件未被修改。\n"
+                "  请把这句话反馈给维护者。")
+        return []
     bad = []
     for f in files:
         try:
@@ -1094,6 +1109,104 @@ def node_check(files):
         if r.returncode != 0:
             bad.append((f, (r.stderr or r.stdout)[-500:]))
     return bad
+
+
+def _bracket_balance(src):
+    """粗略统计未闭合的括号数量（跳过字符串与注释）。
+
+    只作参考：JS 的正则字面量（如 /[{}]/）会被误当成括号，
+    因此这个结果**不能**用来阻断流程，只在大幅偏离时提示用户。
+    返回未闭合左括号的个数；出现"多余右括号"时返回 -1。
+    """
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    closers = {')': '(', ']': '[', '}': '{'}
+    stack = []
+    i, n = 0, len(src)
+    while i < n:
+        ch = src[i]
+        if ch == '/' and i + 1 < n and src[i + 1] == '/':
+            j = src.find('\n', i)
+            if j < 0:
+                break
+            i = j
+            continue
+        if ch == '/' and i + 1 < n and src[i + 1] == '*':
+            j = src.find('*/', i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if ch in ('"', "'", '`'):
+            quote = ch
+            i += 1
+            while i < n:
+                if src[i] == '\\':
+                    i += 2
+                    continue
+                if src[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in pairs:
+            stack.append(ch)
+        elif ch in closers:
+            if stack and stack[-1] == closers[ch]:
+                stack.pop()
+            else:
+                return -1
+        i += 1
+    return len(stack)
+
+
+def structure_check(files):
+    """没有 Node.js 时的替代校验：结构级，不是语法级。
+
+    只覆盖"注入把文件弄坏"的几种典型症状，不能替代 node --check：
+      1. 文件能被 UTF-8 解码、非空
+      2. 注入块标记成对、顺序正确、不重复
+      3. 括号计数没有明显异常（参考项）
+    返回 (problems, warnings)；problems 非空即中止。
+    """
+    problems, warnings = [], []
+    # 第三个数字是块内容的最小长度（实测：engine 1,386,048 / menu 2,268 / tray 370 / ctx 1,819）。
+    # 取正常值的约 1/4 作下限：既能抓"块被清空/截断到一小截"，又不会误伤正常文件。
+    marker_pairs = ((ENGINE_START, ENGINE_END, 300000),
+                    (MENU_START, MENU_END, 500),
+                    (TRAY_START, TRAY_END, 150),
+                    (CTX_START, CTX_END, 400))
+    for f in files:
+        name = os.path.basename(f)
+        try:
+            c = open(f, encoding='utf-8').read()
+        except UnicodeDecodeError as e:
+            problems.append(f"{name}: UTF-8 解码失败（{e}）")
+            continue
+        except OSError as e:
+            problems.append(f"{name}: 读取失败（{e}）")
+            continue
+        if not c.strip():
+            problems.append(f"{name}: 文件为空")
+            continue
+        if "\x00" in c:
+            problems.append(f"{name}: 含 NUL 字节（写入异常）")
+            continue
+        for s, e, min_len in marker_pairs:
+            ns, ne = c.count(s), c.count(e)
+            if ns != ne:
+                problems.append(f"{name}: 注入标记不成对（{ns} 个 START / {ne} 个 END）")
+            elif ns > 1:
+                problems.append(f"{name}: 注入标记重复（{ns} 次）")
+            elif ns == 1:
+                si, ei = c.index(s), c.index(e)
+                if si > ei:
+                    problems.append(f"{name}: 注入标记顺序颠倒")
+                elif ei - si < min_len:
+                    problems.append(f"{name}: 注入块内容异常短（{ei - si} 字节，正常应 ≥ {min_len}）")
+        bal = _bracket_balance(c)
+        # 括号统计仅作兜底提示，阈值放到 200：实测正常文件因正则字面量会有 1~5 的偏移
+        # （preload -1、sshArgs 5），逐个报出来只会吓人；真正被整段截断的文件偏移是几百。
+        if abs(bal) > 200:
+            warnings.append(f"{name}: 括号计数严重异常（{bal}），若界面异常请用「恢复官方原版」")
+    return problems, warnings
 
 
 # ----------------------------------------------------------------------------
@@ -2282,6 +2395,13 @@ CTX_ORIG_EXPOSE = "electron_1.contextBridge.exposeInMainWorld('electronNative', 
 CTX_HOOKED_EXPOSE = ("electron_1.contextBridge.exposeInMainWorld('electronNative', "
                      "(typeof __AGY_ZH_WRAP_NATIVE__ === 'function' "
                      "? __AGY_ZH_WRAP_NATIVE__(electronNativeAPI) : electronNativeAPI));")
+# 2.33.0 起 preload 多了 isRemoteWindow 分支：它手工把 electronNativeAPI 的字段拷成
+# remoteNative 再暴露，showContextMenu 拿的是**未包装**的原函数。不单独挂钩的话，
+# SSH 远程窗口里的右键菜单永远保持英文（本地窗口正常）。
+CTX_REMOTE_ORIG = "electron_1.contextBridge.exposeInMainWorld('electronNative', remoteNative);"
+CTX_REMOTE_HOOKED = ("electron_1.contextBridge.exposeInMainWorld('electronNative', "
+                     "(typeof __AGY_ZH_WRAP_NATIVE__ === 'function' "
+                     "? __AGY_ZH_WRAP_NATIVE__(remoteNative) : remoteNative));")
 
 
 def build_ctxmenu_block():
@@ -2350,6 +2470,15 @@ def patch_ctx_menu(path, report):
         report.append(("替换", "preload.js 原生右键菜单挂钩（electronNative 暴露点）", True))
     else:
         report.append(("未命中", "preload.js 原生右键菜单挂钩（官方结构变动，右键菜单可能保持英文）", False))
+    # 远程窗口分支（2.33.0+）：单独包一层，否则 SSH 窗口的右键菜单保持英文
+    if CTX_REMOTE_HOOKED in c:
+        report.append(("已生效", "preload.js 远程窗口右键菜单挂钩", True))
+    elif CTX_REMOTE_ORIG in c:
+        c = c.replace(CTX_REMOTE_ORIG, CTX_REMOTE_HOOKED)
+        report.append(("替换", "preload.js 远程窗口右键菜单挂钩（remoteNative 暴露点）", True))
+    else:
+        # 2.31.x 及更早没有 isRemoteWindow 分支，属正常
+        report.append(("跳过", "preload.js 远程窗口右键菜单挂钩（当前版本无远程窗口）", True))
     c = c.rstrip("\n") + "\n" + build_ctxmenu_block()
     open(path, 'w', encoding='utf-8', newline='').write(c)
 
@@ -2669,14 +2798,25 @@ def cmd_apply(resources, npx, auto_yes=False):
     modified = patch_all(extract_dir, engine_code, data, report)
     log(f"注入完成，共修改 {len(modified)} 个文件", ok=True)
 
-    # 5. 语法门禁（node --check，全部通过才继续）
-    bad = node_check(modified)
-    if bad:
-        for f, err in bad:
-            print(_fit_glyphs(f"[✗] 语法校验失败：{os.path.basename(f)}\n{err}"))
-        cleanup_temp(resources, work)
-        die("语法门禁未通过，已中止（原 app.asar 未被修改，软件不受影响）。")
-    log(f"语法门禁：{len(modified)} 个文件全部通过 node --check", ok=True)
+    # 5. 语法门禁（有 node 用 node --check；没有则走结构自检）
+    if NODE_OK:
+        bad = node_check(modified)
+        if bad:
+            for f, err in bad:
+                print(_fit_glyphs(f"[✗] 语法校验失败：{os.path.basename(f)}\n{err}"))
+            cleanup_temp(resources, work)
+            die("语法门禁未通过，已中止（原 app.asar 未被修改，软件不受影响）。")
+        log(f"语法门禁：{len(modified)} 个文件全部通过 node --check", ok=True)
+    else:
+        problems, warns = structure_check(modified)
+        for w in warns:
+            log("  " + w, warn=True)
+        if problems:
+            for p in problems:
+                print(_fit_glyphs(f"[✗] 结构自检失败：{p}"))
+            cleanup_temp(resources, work)
+            die("结构自检未通过，已中止（原 app.asar 未被修改，软件不受影响）。")
+        log(f"结构自检：{len(modified)} 个文件通过（未装 Node.js，跳过 node --check）", warn=True)
 
     # 6. 打包（排除目录自动从 asar 推导，未来版本新增 unpacked 内容也能适配；
     #    临时文件名带 PID：即使极端情况下并发执行也不会互相覆盖）
@@ -2755,6 +2895,9 @@ def cmd_apply(resources, npx, auto_yes=False):
     extract_any(npx, temp_asar, verify_dir, quiet=True)
     marker_checks = [
         (os.path.join(verify_dir, "dist", "preload.js"), ENGINE_START),
+        # 右键菜单块与引擎同在一个 preload.js，之前只查了引擎标记，
+        # 万一右键块注入失败（函数名冲突等）复检发现不了，这里补上。
+        (os.path.join(verify_dir, "dist", "preload.js"), CTX_START),
         (os.path.join(verify_dir, "dist", "menu.js"), MENU_START),
         (os.path.join(verify_dir, "dist", "tray.js"), TRAY_START),
     ]
@@ -2763,11 +2906,23 @@ def cmd_apply(resources, npx, auto_yes=False):
     if missing:
         cleanup_temp(resources, work)
         die(f"部署后复检失败（标记缺失：{missing}），已中止。原文件未被修改。")
-    bad = node_check([p for p, _ in marker_checks])
-    if bad:
-        cleanup_temp(resources, work)
-        die("打包产物语法校验失败，已中止。原文件未被修改。")
-    log("部署后复检：注入标记与语法全部验证通过", ok=True)
+    # preload.js 在校验清单里出现两次（引擎块 + 右键块），去重后再交给门禁，
+    # 否则同一个文件会被 node --check / 结构自检 跑两遍，问题也会重复报。
+    verify_files = sorted({p for p, _ in marker_checks})
+    if NODE_OK:
+        bad = node_check(verify_files)
+        if bad:
+            cleanup_temp(resources, work)
+            die("打包产物语法校验失败，已中止。原文件未被修改。")
+        log("部署后复检：注入标记与语法全部验证通过", ok=True)
+    else:
+        problems, warns = structure_check(verify_files)
+        for w in warns:
+            log("  " + w, warn=True)
+        if problems:
+            cleanup_temp(resources, work)
+            die("打包产物结构自检失败，已中止。原文件未被修改。\n  " + "\n  ".join(problems))
+        log("部署后复检：注入标记与结构全部通过（未装 Node.js，未做语法级校验）", warn=True)
 
     # 8. 原子替换（同卷 os.replace）
     #先做磁盘空间预检：备份 + 新包会同时存在，空间不足会中途失败留下垃圾
@@ -2888,10 +3043,16 @@ def cmd_restore(resources, auto_yes=False):
     print("=" * 62)
     print("  恢复官方英文原版")
     print("=" * 62)
+    # 关键：当前 asar 已是官方英文时必须直接返回。
+    # 否则会拿旧备份覆盖新版本 —— 例如用户汉化过 2.31.2、官方自动升级到 2.33.0 后
+    # 再点「恢复原版」，旧备份会把 2.31.2 的 asar 塞进 2.33.0 的安装目录，
+    # 造成 asar 与 exe 版本错配，应用直接起不来。
+    if not asar_is_localized(asar):
+        log("当前已是官方英文原版，无需恢复。", ok=True)
+        if os.path.isfile(bak):
+            log("（检测到旧备份，但它可能是更早的版本，已保留未动）", warn=True)
+        return
     if not os.path.isfile(bak):
-        if not asar_is_localized(asar):
-            log("当前已是官方原版，无需恢复。", ok=True)
-            return
         die(f"未找到备份文件 {bak}，无法恢复。\n"
             "（当前 asar 已汉化且无备份。可重装 Antigravity 恢复英文。）")
     if asar_is_localized(bak):
@@ -3407,7 +3568,7 @@ def main():
                 return
             print("\n  输入无效，请重新选择（1 / 2 / 3 / 4 / 5 / 0）。")
     else:
-        print(__doc__)
+        print(__doc__.replace("__VERSION__", TOOL_VERSION))
 
 
 if __name__ == "__main__":
