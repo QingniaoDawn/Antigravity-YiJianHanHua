@@ -54,8 +54,9 @@
 |---|---|---|
 | **Windows** | 仓库根目录的 `一键汉化.bat` | 双击即用 |
 | **macOS** | [`mac/`](mac/) 目录 | 右键 `一键汉化.command` → 选择「打开」 |
+| **Linux** | 仓库根目录的 `一键汉化.sh` 或 [`linux/`](linux/) 目录 | 终端执行 `./一键汉化.sh`（详见 [linux/README.md](linux/README.md)） |
 
-两个平台共用同一套引擎与词典（词条量、覆盖范围、备份策略完全一致），
+三个平台共用同一套引擎与词典（词条量、覆盖范围、备份策略完全一致），
 `localize.py` 会自动识别当前系统走对应分支。
 
 > macOS 用户请看 **[mac/README.md](mac/README.md)**，里面讲清了代码签名这件事，
@@ -221,7 +222,7 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 2. **运行前会自动关闭 Antigravity**：汉化和还原都需要先关闭应用，脚本会自动处理，不用手动关。
 3. **备份文件别手动删**：安装目录里的 `app.asar.bak` 是还原用的官方原版备份，脚本会自动维护它。
 4. **官方大版本更新后**：个别词条可能暂时失效（脚本会安全跳过，不报错不损坏），界面主体翻译不受影响；等本工具适配更新即可。
-5. **支持 Windows 与 macOS**；Linux 暂不适用（脚本已预留分支，未做真机适配）。
+5. **支持 Windows、macOS 与 Linux**：Linux 版已补齐 `/proc/<pid>/exe` 精确进程识别、POSIX 原子热替换（`--no-kill`）、多安装路径自动探测与 `sudo`/`pkexec` 提权支持（详见 [linux/README.md](linux/README.md)）。
 6. **macOS 额外说明**：Mac 会对 `.app` 做代码签名，改包必然导致签名失效，
    本工具已在汉化/还原后自动重新签名（保留 Electron 运行必需的 entitlements），
    并写入稳定的代码身份，让官方应用内更新不被 Squirrel 拒绝
