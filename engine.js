@@ -1,5 +1,5 @@
 // =============================================================================
-// Antigravity 一键汉化引擎 v1.12
+// Antigravity 一键汉化引擎 v1.13
 // 设计要点：
 //   - 纯 Web API（无 require/network），preload 沙箱环境可用
 //   - 多级瀑布翻译管道 + O(1) 缓存
@@ -328,6 +328,14 @@
     //   · 含中文时 normalizeDurations 会把 "1M" 当 1 分钟改成「1分」（网友反馈的原句）。
     // 现在用官方稳定的结构标识做物理隔离：data-markdown-root 是 Markdown 渲染根，
     // 只有消息/转录/自动化说明这类**内容**会用到它；界面文案不在这棵树里。
+    // 用户可编辑的标题（会话名 / 项目名 / 侧问标签 / 页面大标题）。
+    // 官方用一个共享组件渲染这些标题：非编辑态是
+    //   <span class="truncate inline-block …">{title}</span>（没有 data-testid）
+    // 编辑态是 <input data-testid="inline-edit-input">（输入框本来就不翻）。
+    // 这些标题是**用户自己起的名字**，翻了就等于改用户数据——网友反馈「手动改了
+    // 英文标题，一刷新被汉化」，根因就在这里。
+    var EDITABLE_TITLE_SEL = 'span.truncate.inline-block';
+
     var CONTENT_SEL = [
         '[data-testid="conversation-view"] [data-markdown-root]',
         '[data-testid="agent-response"] [data-markdown-root]',
@@ -342,8 +350,44 @@
         '[data-testid="transcript-line-text"]',
         '[data-testid="transcript-work-line"]',
         // 智能体自己写的计划清单（标题由模型生成，不是界面文案）
-        '[data-testid="step-plan"]'
+        '[data-testid="step-plan"]',
+        // 用户可编辑的标题（会话名 / 项目名 / 侧问标签）
+        EDITABLE_TITLE_SEL,
+        // 会话悬停卡片里的标题（另一套渲染：line-clamp-3 + leading-snug 唯一）
+        'div.line-clamp-3.leading-snug'
     ].join(',');
+
+    // 已知标题只在这些"标题会出现的容器"里按文本匹配，避免把同名界面词一起跳过。
+    // 反例：把某个会话改名成 "Settings" 后，设置弹窗的标题（role=dialog 里）也必须照常翻。
+    var TITLE_SURFACE_SEL = '[role="tooltip"],[role="option"],[role="menuitem"],' +
+        '[role="tab"],[role="tabpanel"],[data-radix-popper-content-wrapper]';
+
+    // 记住见过的标题原文，用于封堵**其它渲染面**：标签页、搜索结果、命令面板等
+    // 处的标题并不是用上面那个组件渲染的，类名堵不完；但它们的文本与标题完全相同。
+    // 上限 300 条，超出丢最旧的。
+    var knownTitles = [];
+    var knownTitleSet = Object.create(null);
+
+    function recordTitle(el) {
+        try {
+            var t = (el.textContent || '').trim();
+            if (!t || t.length > 120 || knownTitleSet[t]) return;
+            knownTitleSet[t] = 1;
+            knownTitles.push(t);
+            if (knownTitles.length > 300) {
+                var old = knownTitles.shift();
+                delete knownTitleSet[old];
+            }
+        } catch (_) {}
+    }
+
+    function inTitleSurface(el) {
+        try {
+            return !!(el && el.closest && el.closest(TITLE_SURFACE_SEL));
+        } catch (e) {
+            return false;
+        }
+    }
 
     // 判定结果按元素缓存：每次全量扫描会对同一个元素问两遍
     //（translateAttrs 一次 + judgeElement 一次），一次 closest 带 12 个后代选择器
@@ -474,6 +518,8 @@
             if (node.hasAttribute(attr)) {
                 var attrVal = node.getAttribute(attr);
                 if (attrVal && LETTER_RE.test(attrVal)) {
+                    // 提示文案如果就是某个用户标题（悬停显示完整会话名之类），同样不翻
+                    if (knownTitleSet[attrVal.trim()] && inTitleSurface(node)) continue;
                     var attrOut = translateString(attrVal);
                     if (attrVal !== attrOut) node.setAttribute(attr, attrOut);
                 }
@@ -513,6 +559,12 @@
             if (translatedNodes.has(node)) return;
             var original = node.nodeValue;
             if (!original || !original.trim()) return;
+            // 用户标题原文出现在标题类容器（标签页/搜索结果/悬浮卡）里时不翻；
+            // 其它地方的同名界面词照常翻（避免出现「设置页标题叫 Settings 就不翻了」）
+            if (knownTitleSet[original.trim()] && inTitleSurface(node.parentElement)) {
+                translatedNodes.add(node);
+                return;
+            }
             if (shouldSkipNode(node)) { translatedNodes.add(node); return; }
             var translated = translateString(original);
             if (original !== translated) {
@@ -524,6 +576,10 @@
         } else if (node.nodeType === 1) { // 元素节点
             translateAttrs(node); // 提示属性优先翻译，不受跳过区限制
             if (shouldSkipNode(node)) {
+                // 标题 span 在这里被跳过，顺手把原文记进标题表，供其它渲染面复用
+                try {
+                    if (node.matches && node.matches(EDITABLE_TITLE_SEL)) recordTitle(node);
+                } catch (_) {}
                 // 用户消息整棵子树默认跳过（保护用户原文），但右上角那条操作条
                 //（时间戳 / 复制 / 编辑）属于界面元素。剪枝发生在 user-input-step 这一层，
                 // 子节点的白名单没机会执行，所以在这里单独把操作条捞出来翻。
@@ -709,26 +765,13 @@
         };
     } catch (_) {}
 
-    // 窗口标题翻译（"Antigravity - xxx" → 中文）。
-    // 同样是宿主关键路径：任何代码设 document.title 都会走这里，
-    // 翻译抛异常就会让"设标题"这个动作整个失败。失败时降级为写原值，
-    // 保证宿主行为不受影响——宁可标题是英文，也不能让宿主报错。
-    try {
-        var titleDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'title') ||
-            Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'title');
-        if (titleDesc && titleDesc.set) {
-            var origTitleSet = titleDesc.set;
-            Object.defineProperty(document, 'title', {
-                configurable: true, enumerable: true,
-                get: function () { return titleDesc.get.call(document); },
-                set: function (val) {
-                    var out = val;
-                    try { out = translateString(val); } catch (_) { out = val; }
-                    origTitleSet.call(document, out);
-                }
-            });
-        }
-    } catch (_) {}
+    // 窗口标题：**故意不翻译**（v1.18.1）。
+    // 官方拼接规则是 `${会话名} - ${项目} - ${工作区} - Antigravity`，前几段全是
+    // 用户可以双击改名的内容。旧版在这里套了一层 translateString，实测
+    // "Settings - Antigravity" 会被前缀规则改写成「设置 - Antigravity」——
+    // 用户把会话重命名成英文后，窗口标题/任务栏也跟着变中文，正是网友反馈的现象。
+    // 窗口标题里真正属于界面词的只有极少数状态，收益远小于「改坏用户数据」的风险，
+    // 所以这一层直接去掉：宿主怎么设，就怎么显示。
 
     function startObserver() {
         safeScan();
@@ -770,7 +813,7 @@
 
     // 调试句柄（F12 控制台可用 window.__AGY_ZH_DEBUG__.stats() 查看运行状态）
     window.__AGY_ZH_DEBUG__ = {
-        version: '1.12.0',
+        version: '1.13.0',
         stats: function () {
             return {
                 active: true,
