@@ -113,8 +113,8 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.17.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.33.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2；2.33.0 为离线全量验证）
+TOOL_VERSION = "v1.18.0"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.34.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2 / 2.33.0；2.34.0 为离线全量验证 + 运行态抽查）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 NODE_OK = False                     # check_env() 探测结果：有 node 才做 node --check，否则走结构自检
@@ -1257,6 +1257,24 @@ def _mac_running_pids(app_bundle=None):
     return [(p, path) for p, path in hits if p != me]
 
 
+def _same_install_exe(exe_path, resources_dir):
+    """进程的可执行文件是否就是本次要改的那份安装里的 Antigravity.exe。
+
+    为什么不能只按文件名认（v1.18 审计发现）：`--path` 指向另一份拷贝时，
+    旧逻辑会把**正在运行的那份安装**也一起 taskkill 掉。用户感觉像"工具把我的
+    应用关了"，其实只是在改另一份目录。
+    用 samefile 而不是字符串比较：Windows 的 8.3 短路径、盘符大小写、符号链接
+    都能正确识别成同一个文件；目标文件不存在时返回 False（那份安装本来也没在跑）。
+    """
+    if not exe_path or not resources_dir:
+        return False
+    try:
+        target = os.path.join(os.path.dirname(os.path.abspath(resources_dir)), "Antigravity.exe")
+        return os.path.samefile(exe_path, target)
+    except OSError:
+        return False
+
+
 def kill_processes(auto=False, resources_dir=None):
     """关闭 Antigravity 相关进程。按可执行文件路径过滤，只杀安装目录下的进程——
     其他软件恰好同名（如 language_server）的进程绝不误杀。"""
@@ -1330,8 +1348,9 @@ def kill_processes(auto=False, resources_dir=None):
         name = p.get("Name", "")
         if marker and path and marker in path:
             targets.append(p)
-        elif name == "Antigravity.exe":
-            # Antigravity.exe 名称足够独特；路径不可读时也视为目标
+        elif name == "Antigravity.exe" and (not path or _same_install_exe(path, resources_dir)):
+            # 路径不可读（权限/占用）时才退回按名字认；路径可读时必须确认是同一份安装，
+            # 否则 `--path` 改拷贝目录会把用户正在用的那份杀掉（v1.18 修）
             targets.append(p)
         elif name == "language_server.exe" and not path:
             # 路径读不到的同名进程：仅在确认本机 Antigravity 在跑时才视为疑似目标
@@ -2324,15 +2343,32 @@ def revert_replaces(content, pairs):
     return content
 
 
-def apply_anchor_replace(content, find, replace, label, report):
-    """锚点替换：原文在→替换；替换结果已在→跳过；都不在→记录未命中"""
+def apply_anchor_replace(content, find, replace, label, report, alt=None):
+    """锚点替换：原文在→替换；替换结果已在→跳过；都不在→记录未命中
+
+    alt：跨版本兼容备选锚点，形如 [{"find": ..., "replace": ...}, ...]。
+    官方在新版里改了文案（例如 2.34.0 把 HUD 的 Resume 改成 Allow again）时，
+    旧锚点必然找不到；直接报「未命中」会让用户看到一条其实已经处理好的告警。
+    这里按「主锚点 → 备选锚点 → 译文是否已在位」的顺序判定，任一命中都不算失败。
+    """
     if find in content:
         report.append(("替换", label, True))
         return content.replace(find, replace)
+    for a in (alt or []):
+        af, ar = a.get("find"), a.get("replace")
+        if af and ar and af in content:
+            report.append(("替换", f"{label}（旧版文案）", True))
+            return content.replace(af, ar)
     probe = replace if len(replace) < 200 else replace[:200]
     if probe in content:
         report.append(("已生效", label, True))
         return content
+    for a in (alt or []):
+        ar = a.get("replace") or ""
+        ap = ar if len(ar) < 200 else ar[:200]
+        if ap and ap in content:
+            report.append(("已生效", label, True))
+            return content
     report.append(("未命中", label, False))
     return content
 
@@ -2606,7 +2642,9 @@ def patch_all(extract_dir, engine_code, data, report):
         c = rd(p)
         changed = False
         for patch in patches:
-            new = apply_anchor_replace(c, patch["find"], patch["replace"], f"{rel}: {patch['find'][:30]}", report)
+            new = apply_anchor_replace(c, patch["find"], patch["replace"],
+                                       f"{rel}: {patch['find'][:30]}", report,
+                                       patch.get("alt"))
             changed = changed or new != c
             c = new
         if changed:
@@ -2941,11 +2979,20 @@ def cmd_apply(resources, npx, auto_yes=False):
 
     replaced = False
     try:
-        os.replace(temp_asar, asar)
-        replaced = True
+        # Windows：杀进程之后文件仍可能被 Defender / 搜索索引短暂占用，
+        # 单次 os.replace 会直接把一次正常汉化判成"文件被占用"。
+        # 重试 6 次（约 1.5 秒），真的占用才报错。macOS 不重试（权限问题重试无意义）。
+        for _try in range(1 if IS_MAC else 6):
+            try:
+                os.replace(temp_asar, asar)
+                replaced = True
+                break
+            except PermissionError:
+                if IS_MAC or _try >= 5:
+                    raise
+                time.sleep(0.25)
     except PermissionError:
         # macOS：/Applications 权限不足时用管理员密码重试
-        #（Windows 走到这里通常是文件被占用，重试无意义）
         if IS_MAC:
             log("权限不足，正在弹出系统密码框以完成替换...", warn=True)
             if _mac_replace_with_admin(temp_asar, asar):
@@ -2958,7 +3005,8 @@ def cmd_apply(resources, npx, auto_yes=False):
         else:
             cleanup_temp(resources, work)
             die("替换 app.asar 时被拒绝（文件仍被占用）。"
-                "请完全退出 Antigravity（含托盘）后重试。")
+                "请完全退出 Antigravity（含托盘）后重试。\n"
+                "  若已退出仍报此错，通常是杀毒软件/搜索索引正在扫描该文件，等十几秒再试。")
     if not replaced:
         cleanup_temp(resources, work)
         die("替换 app.asar 失败，已中止（原文件未被修改）。")
