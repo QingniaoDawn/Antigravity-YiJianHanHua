@@ -98,11 +98,54 @@ except Exception:
     pass
 
 # ----------------------------------------------------------------------------
-# 常量
+# 常量与内置资源读取（支持源码目录直跑 & 单文件编译版 zipapp 内置读取）
 # ----------------------------------------------------------------------------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+def _resolve_script_dir():
+    f = os.path.abspath(__file__)
+    d = os.path.dirname(f)
+    if os.path.isdir(d):
+        return d
+    # 单文件 zipapp / 可执行包：__file__ 形如 /path/to/binary/localize.py
+    while d and not os.path.isdir(d):
+        d = os.path.dirname(d)
+    return d or os.path.dirname(os.path.abspath(sys.argv[0]))
+
+
+def _find_bundled_archive():
+    f = os.path.abspath(__file__)
+    d = os.path.dirname(f)
+    while d and not os.path.exists(d):
+        d = os.path.dirname(d)
+    if d and os.path.isfile(d):
+        return d
+    argv0 = os.path.abspath(sys.argv[0]) if sys.argv else ""
+    if argv0 and os.path.isfile(argv0):
+        return argv0
+    return None
+
+
+SCRIPT_DIR = _resolve_script_dir()
 ENGINE_PATH = os.path.join(SCRIPT_DIR, "engine.js")
 DATA_PATH = os.path.join(SCRIPT_DIR, "zh_data.json")
+
+
+def load_asset_text(filename, disk_path):
+    """优先读取同目录下的外部文件（方便用户自定义 zh_data.json）；
+    若外部文件不存在且当前为单文件编译版，则从内置归档中读取。"""
+    if os.path.isfile(disk_path):
+        with open(disk_path, encoding="utf-8") as f:
+            return f.read()
+    arch = _find_bundled_archive()
+    if arch:
+        import zipfile
+        try:
+            if zipfile.is_zipfile(arch):
+                with zipfile.ZipFile(arch, "r") as zf:
+                    if filename in zf.namelist():
+                        return zf.read(filename).decode("utf-8")
+        except Exception:
+            pass
+    return None
 
 ENGINE_START = "// ===== [AGY_ZH_ENGINE_START] Antigravity 一键汉化引擎（整合增强版）====="
 ENGINE_END = "// ===== [AGY_ZH_ENGINE_END] ====="
@@ -129,6 +172,7 @@ DL_CHUNK = 65536            # 下载分块大小
 
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 
 WIN_PATHS = [
     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "antigravity"),
@@ -153,6 +197,17 @@ MAC_PATTERNS = [
     "/opt/homebrew/Caskroom/antigravity/*/Antigravity.app/Contents/Resources",
     "/usr/local/Caskroom/antigravity/*/Antigravity.app/Contents/Resources",
     "/Applications/*.app/Contents/Resources",       # 应用名大小写/变体
+]
+LINUX_PATHS = [
+    os.path.expanduser("~/.local/share/antigravity/resources"),
+    os.path.expanduser("~/.local/share/Antigravity/resources"),
+    "/opt/Antigravity/resources",
+    "/opt/antigravity/resources",
+    "/usr/lib/antigravity/resources",
+    "/usr/share/antigravity/resources",
+    "/usr/local/share/antigravity/resources",
+    os.path.expanduser("~/Antigravity/resources"),
+    os.path.expanduser("~/antigravity/resources"),
 ]
 
 PROC_NAMES = ["Antigravity.exe", "language_server.exe"]
@@ -333,11 +388,51 @@ def find_resources(override=None):
             except Exception:
                 pass
     else:
-        cands = ["/opt/Antigravity/resources", "/usr/lib/antigravity/resources",
-                 os.path.expanduser("~/.local/share/antigravity/resources")]
+        cands = list(LINUX_PATHS)
+        # Linux 额外从 PATH / ~/.local/bin/antigravity 及正在运行的进程反推安装目录
+        for bin_cand in (
+            shutil.which("antigravity"),
+            shutil.which("Antigravity"),
+            shutil.which("agy"),
+            os.path.expanduser("~/.local/bin/antigravity"),
+            "/usr/local/bin/antigravity",
+            "/usr/bin/antigravity",
+        ):
+            if bin_cand and os.path.exists(bin_cand):
+                try:
+                    real_bin = os.path.realpath(bin_cand)
+                    r = _resources_from_given(os.path.dirname(real_bin))
+                    if r and r not in cands:
+                        cands.insert(0, r)
+                except OSError:
+                    pass
     for c in cands:
         if os.path.isfile(os.path.join(c, "app.asar")):
             return c
+    if IS_LINUX and os.path.isdir("/proc"):
+        # 从正在运行的 antigravity 进程 /proc/<pid>/exe 自动定位
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                exe = os.path.realpath(f"/proc/{entry}/exe")
+                if os.path.basename(exe).lower() == "antigravity":
+                    r = _resources_from_given(os.path.dirname(exe))
+                    if r:
+                        log(f"已从运行中的进程自动定位到 Antigravity：{r}", ok=True)
+                        return r
+            except OSError:
+                continue
+        die("未找到 Antigravity 安装目录。\n"
+            "\n"
+            "  已自动查找：\n"
+            "    - ~/.local/share/antigravity/resources/app.asar\n"
+            "    - /opt/Antigravity/resources/app.asar\n"
+            "    - /usr/lib/antigravity/resources/app.asar\n"
+            "    - PATH 中的 antigravity 可执行文件及运行中进程\n"
+            "\n"
+            "  请用 --path 参数指定安装路径，例如：\n"
+            "    ./一键汉化.sh --path \"/你的安装路径/antigravity\"")
     if IS_MAC:
         # 最后再试一次广搜：常见位置里逐层找 Antigravity.app
         found = _mac_deep_search()
@@ -1275,9 +1370,73 @@ def _same_install_exe(exe_path, resources_dir):
         return False
 
 
-def kill_processes(auto=False, resources_dir=None):
+def _linux_ancestor_pids():
+    """Linux：获取当前进程的所有祖先 PID 集合（通过 /proc/<pid>/status 的 PPid 链回溯）。
+    用于判断汉化工具是否正运行在 Antigravity 自身的内置终端或智能体会话中——
+    若是，决不能杀死祖先进程（否则会把汉化脚本自己一起杀掉），而应自动走 POSIX 原子热替换。"""
+    ancestors = set()
+    cur = os.getpid()
+    for _ in range(64):
+        if cur <= 1 or cur in ancestors:
+            break
+        ancestors.add(cur)
+        ppid = 0
+        try:
+            with open(f"/proc/{cur}/status", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        ppid = int(line.split(":", 1)[1].strip())
+                        break
+        except Exception:
+            break
+        cur = ppid
+    return ancestors
+
+
+def _linux_running_pids(resources_dir=None):
+    """Linux：通过 /proc/<pid>/exe 内核符号链接精确匹配目标安装目录下的进程。
+    只匹配可执行文件真实路径位于本次 Antigravity 安装目录（resources 的上级目录）内的进程，
+    绝不依赖模糊的进程名子串匹配，彻底杜绝误杀其他编辑器（如 VS Code / Neovim）的 language_server。"""
+    if not os.path.isdir("/proc"):
+        return []
+    install_root = ""
+    if resources_dir:
+        try:
+            install_root = os.path.realpath(os.path.dirname(os.path.abspath(resources_dir)))
+        except OSError:
+            install_root = os.path.dirname(os.path.abspath(resources_dir))
+    me = os.getpid()
+    hits = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        try:
+            exe = os.path.realpath(f"/proc/{pid}/exe")
+        except OSError:
+            continue
+        if not exe:
+            continue
+        # 剥离内核在二进制被更新后追加的 " (deleted)" 后缀
+        if exe.endswith(" (deleted)"):
+            exe = exe[:-10]
+        if install_root and (exe == install_root or exe.startswith(install_root + os.sep)):
+            hits.append((pid, exe))
+    return hits
+
+
+def kill_processes(auto=False, resources_dir=None, no_kill=False):
     """关闭 Antigravity 相关进程。按可执行文件路径过滤，只杀安装目录下的进程——
     其他软件恰好同名（如 language_server）的进程绝不误杀。"""
+    if no_kill:
+        log("已启用免关进程模式（--no-kill）：直接进行原子热替换，完成后重启 Antigravity 即可生效", ok=True)
+        return
     if IS_MAC:
         app_bundle = find_app_bundle(resources_dir)
         procs = _mac_running_pids(app_bundle)
@@ -1310,23 +1469,41 @@ def kill_processes(auto=False, resources_dir=None):
         return
 
     if not IS_WIN:
-        names = [p.replace(".exe", "") for p in PROC_NAMES]
-        r = subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True).stdout.lower()
-        running = [n for n in names if n in r]
-        if not running:
+        procs = _linux_running_pids(resources_dir)
+        if not procs:
             return
-        # Linux 等非 Windows / 非 macOS 平台：**不做自动终止**。
-        #
-        # 原因：这里拿不到进程的可执行路径（不像 macOS 那条分支能按 bundle 路径精确过滤），
-        # 只能对 ps 全文做子串匹配；而 `language_server` 是通用名——
-        # 用户很可能同时装了别的编辑器，其语言服务器进程同样含这个字符串，
-        # 一句 `pkill -f language_server` 就会把人家的进程一起杀掉。
-        # 这属于"为了省一步操作而伤害用户环境"，绝不能留。
-        # 宁可让用户手动关闭后重试，也不冒这个险。
-        die("检测到可能相关的进程：" + ", ".join(running) + "\n"
-            "  请手动退出 Antigravity 后重新运行本工具。\n"
-            "  （本工具在 Linux 上不自动结束进程：无法精确区分同名进程，"
-            "以免误杀你其它软件的 language server。）", log=False)
+        ancestors = _linux_ancestor_pids()
+        if any(pid in ancestors for pid, _ in procs):
+            log("检测到当前正在 Antigravity 内部终端/会话中运行，自动启用 POSIX 原子热替换（不强杀当前会话）", ok=True)
+            log("汉化部署完成后，手动重启一次 Antigravity 即可看到中文界面。", ok=True)
+            return
+        desc = ", ".join(f"{os.path.basename(p)}({pid})" for pid, p in procs[:6])
+        if len(procs) > 6:
+            desc += f" 等 {len(procs)} 个进程"
+        if not auto:
+            print(f"[!] 检测到 Antigravity 正在运行（已按安装路径精确匹配）：{desc}")
+            ans = input("    是否关闭它们后继续？(Y=关闭 / h=不关闭直接热替换 / n=取消，默认 Y)：").strip().lower()
+            if ans in ("h", "hot"):
+                log("已选择热替换模式：保持当前进程运行，汉化完成后重启 Antigravity 即可生效", ok=True)
+                return
+            if ans not in ("", "y", "yes"):
+                die("已取消。请手动退出 Antigravity 后重试。", log=False)
+        log(f"正在关闭进程：{desc}")
+        for pid, _ in procs:
+            _safe_run(["kill", "-TERM", str(pid)])
+        for _ in range(15):
+            time.sleep(0.2)
+            if not _linux_running_pids(resources_dir):
+                log("进程已全部退出", ok=True)
+                return
+        for pid, _ in _linux_running_pids(resources_dir):
+            _safe_run(["kill", "-KILL", str(pid)])
+        time.sleep(0.5)
+        if _linux_running_pids(resources_dir):
+            log("部分进程未完全退出，将继续使用 POSIX 原子替换部署（完成后重启即可）", warn=True)
+        else:
+            log("进程已全部退出", ok=True)
+        return
 
     # Windows：枚举进程的可执行路径，只处理 Antigravity 目录下的
     marker = (resources_dir or "").replace("/", "\\").lower()
@@ -1437,6 +1614,37 @@ def launch_app(resources_dir):
         else:
             log(f"启动失败：{(r.stderr or '').strip()[:200]}\n"
                 "  若提示「应用已损坏」，请看 README 的「打不开怎么办」一节。", warn=True)
+        return
+    # Linux：定位可执行文件并以独立会话后台启动（剥离 ELECTRON_RUN_AS_NODE）
+    install_root = os.path.dirname(os.path.abspath(resources_dir))
+    exe = None
+    for cand in (
+        os.path.join(install_root, "antigravity"),
+        os.path.join(install_root, "Antigravity"),
+        os.path.expanduser("~/.local/bin/antigravity"),
+        shutil.which("antigravity"),
+    ):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            exe = cand
+            break
+    if not exe:
+        log("未找到 Antigravity 启动程序（可从应用菜单或终端手动打开）", warn=True)
+        return
+    child_env = {k: v for k, v in os.environ.items() if k.upper() != "ELECTRON_RUN_AS_NODE"}
+    try:
+        p = subprocess.Popen(
+            [exe], cwd=os.path.dirname(exe),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True, start_new_session=True, env=child_env)
+        time.sleep(0.8)
+        if p.poll() is not None:
+            log("启动失败：进程立刻退出了（可手动运行 antigravity 打开）", warn=True)
+            return
+        log(f"已启动 Antigravity（{exe}）", ok=True)
+    except Exception as e:
+        log(f"启动失败：{e}（可手动运行 antigravity 打开）", warn=True)
 
 
 # ----------------------------------------------------------------------------
@@ -2740,6 +2948,23 @@ def derive_unpack_pattern(asar_path):
     return "{" + ",".join(items) + "}", entries
 
 
+def _linux_replace_with_admin(src, dst):
+    """Linux：当安装目录位于 /opt 或 /usr/lib 等需 root 权限的位置时，通过 sudo 或 pkexec 完成原子替换。"""
+    if not IS_LINUX or not os.path.isfile(src):
+        return False
+    dst_tmp = dst + f".agyzh.{os.getpid()}.admintmp"
+    script = f"cp -f {_shquote(src)} {_shquote(dst_tmp)} && chmod 644 {_shquote(dst_tmp)} && mv -f {_shquote(dst_tmp)} {_shquote(dst)}"
+    for tool in ("sudo", "pkexec"):
+        if shutil.which(tool):
+            try:
+                r = subprocess.run([tool, "/bin/sh", "-c", script], timeout=120)
+                if r.returncode == 0:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def ensure_backup(asar_path):
     """当前 asar 为官方英文时（重新）生成备份；已汉化时不动备份。
     这样官方更新后再次汉化，备份会自动刷新为新版英文，还原永不降级。"""
@@ -2750,8 +2975,15 @@ def ensure_backup(asar_path):
         return None, False  # 已汉化但无备份（异常态，调用方负责警告）
     # 当前是官方英文 → 刷新备份
     tmp = bak + ".tmp"
-    shutil.copy2(asar_path, tmp)
-    os.replace(tmp, bak)
+    try:
+        shutil.copy2(asar_path, tmp)
+        os.replace(tmp, bak)
+    except PermissionError:
+        if IS_LINUX:
+            log("目标目录需要 root 权限写入备份，正在请求 sudo/pkexec 授权...", warn=True)
+            if _linux_replace_with_admin(asar_path, bak):
+                return bak, True
+        raise
     return bak, True
 
 
@@ -2766,23 +2998,24 @@ def get_asar_version(extract_dir):
 # ----------------------------------------------------------------------------
 # 主管线
 # ----------------------------------------------------------------------------
-def cmd_apply(resources, npx, auto_yes=False):
+def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     asar = os.path.join(resources, "app.asar")
     if not os.path.isfile(asar):
         die(f"未找到 {asar}")
 
     print("=" * 62)
-    print(f"  Antigravity 一键汉化 {TOOL_VERSION}（Windows / macOS 双平台）")
+    print(f"  Antigravity 一键汉化 {TOOL_VERSION}（Windows / macOS / Linux 三平台）")
     print("=" * 62)
     log(f"目标：{asar}")
 
-    # 0. 引擎与词典自检
-    if not os.path.isfile(ENGINE_PATH):
+    # 0. 引擎与词典自检（支持同目录外部文件 & 单文件编译版内置归档）
+    engine_code = load_asset_text("engine.js", ENGINE_PATH)
+    if not engine_code:
         die(f"缺少引擎文件：{ENGINE_PATH}")
-    if not os.path.isfile(DATA_PATH):
+    data_text = load_asset_text("zh_data.json", DATA_PATH)
+    if not data_text:
         die(f"缺少词典文件：{DATA_PATH}")
-    engine_code = open(ENGINE_PATH, encoding='utf-8').read()
-    data = json.load(open(DATA_PATH, encoding='utf-8'))
+    data = json.loads(data_text)
     log(f"词典装载：主词典 {len(data.get('exact', {}))} 条 / 正则 {len(data.get('regex', []))} 条 "
         f"/ 菜单 {len(data.get('menuMap', {}))} 条", ok=True)
 
@@ -2798,7 +3031,7 @@ def cmd_apply(resources, npx, auto_yes=False):
                 die("已取消。", log=False)
 
     # 2. 关闭进程（按路径过滤，只杀 Antigravity 自己的）
-    kill_processes(auto=auto_yes, resources_dir=resources)
+    kill_processes(auto=auto_yes, resources_dir=resources, no_kill=no_kill)
 
     # 3. 解包
     work = tempfile.mkdtemp(prefix="agy_zh_")
@@ -2858,7 +3091,9 @@ def cmd_apply(resources, npx, auto_yes=False):
 
     # 6. 打包（排除目录自动从 asar 推导，未来版本新增 unpacked 内容也能适配；
     #    临时文件名带 PID：即使极端情况下并发执行也不会互相覆盖）
-    temp_asar = os.path.join(resources, f"app.asar.agyzh.{os.getpid()}.tmp")
+    #    Linux 下若安装目录（如 /opt/Antigravity/resources）普通用户不可写，则先打到临时目录 work 再提权部署
+    temp_dir = resources if os.access(resources, os.W_OK) else work
+    temp_asar = os.path.join(temp_dir, f"app.asar.agyzh.{os.getpid()}.tmp")
     # 结构参照：优先用干净的官方备份（当前部署包本身可能带历史布局偏差）
     bak = asar + ".bak"
     ref_asar = bak if (os.path.isfile(bak) and not asar_is_localized(bak)) else asar
@@ -2982,13 +3217,23 @@ def cmd_apply(resources, npx, auto_yes=False):
         # Windows：杀进程之后文件仍可能被 Defender / 搜索索引短暂占用，
         # 单次 os.replace 会直接把一次正常汉化判成"文件被占用"。
         # 重试 6 次（约 1.5 秒），真的占用才报错。macOS 不重试（权限问题重试无意义）。
-        for _try in range(1 if IS_MAC else 6):
+        for _try in range(1 if (IS_MAC or IS_LINUX) else 6):
             try:
                 os.replace(temp_asar, asar)
                 replaced = True
                 break
-            except PermissionError:
-                if IS_MAC or _try >= 5:
+            except (PermissionError, OSError) as e:
+                # 跨分区 temp_dir -> resources 时 os.replace 会抛 EXDEV (errno 18)
+                import errno as _errno
+                if isinstance(e, OSError) and getattr(e, "errno", None) == _errno.EXDEV:
+                    if os.access(resources, os.W_OK):
+                        local_tmp = os.path.join(resources, f"app.asar.agyzh.{os.getpid()}.tmp")
+                        shutil.copy2(temp_asar, local_tmp)
+                        os.replace(local_tmp, asar)
+                        replaced = True
+                        break
+                    raise PermissionError(str(e))
+                if IS_MAC or IS_LINUX or _try >= 5:
                     raise
                 time.sleep(0.25)
     except PermissionError:
@@ -3002,6 +3247,14 @@ def cmd_apply(resources, npx, auto_yes=False):
                 die("替换 app.asar 时权限不足，且管理员授权未完成。\n"
                     "  请在「系统设置 → 隐私与安全性」中允许本工具访问"
                     "「应用程序」文件夹后重试。")
+        elif IS_LINUX:
+            log("安装目录需要 root 权限，正在通过 sudo/pkexec 完成替换...", warn=True)
+            if _linux_replace_with_admin(temp_asar, asar):
+                replaced = True
+            else:
+                cleanup_temp(resources, work)
+                die("替换 app.asar 时权限不足，且 sudo/pkexec 提权未完成。\n"
+                    "  请使用 sudo 运行本工具，或检查安装目录权限。")
         else:
             cleanup_temp(resources, work)
             die("替换 app.asar 时被拒绝（文件仍被占用）。"
@@ -3041,23 +3294,27 @@ def cmd_apply(resources, npx, auto_yes=False):
         print(_fit_glyphs(f"  {mark} [{kind}] {label}"))
     fails = [r for r in report if not r[2]]
     if fails:
-        # 区分两类未命中，避免 macOS 用户把"平台本来就没有的弹窗"误当成故障
+        # 区分两类未命中，避免 macOS / Linux 用户把"平台本来就没有的弹窗"误当成故障
         win_only = [r for r in fails
                     if any(k in r[1] for k in ("WSL", "Windows", "windows filesystem"))]
         real = [r for r in fails if r not in win_only]
-        if IS_MAC and win_only:
+        if (IS_MAC or IS_LINUX) and win_only:
+            plat_label = "Mac" if IS_MAC else "Linux"
             print(f"\n[·] {len(win_only)} 处为 Windows 专属弹窗（WSL 等），"
-                  "Mac 版本就没有这些界面，属正常现象")
+                  f"{plat_label} 版本就没有这些界面，属正常现象")
         if real:
             print(f"[!] 有 {len(real)} 处锚点未命中（官方版本变动所致，"
                   "对应位置保持英文，不影响其他功能）")
-        if not real and not (IS_MAC and win_only):
+        if not real and not ((IS_MAC or IS_LINUX) and win_only):
             print("\n[!] 有锚点未命中，请查看上方明细")
     print("-" * 62)
 
     # 10. 启动
     if not auto_yes:
-        if input("是否立即启动 Antigravity？(Y/n)：").strip().lower() in ("", "y", "yes"):
+        # 若在 Linux 下当前 Antigravity 仍在运行（热替换模式），提示用户重启即可
+        if IS_LINUX and _linux_running_pids(resources):
+            print("\n[✓] 汉化包已热替换完成！由于 Antigravity 当前正在运行，请手动重启一次 Antigravity 即可生效。")
+        elif input("是否立即启动 Antigravity？(Y/n)：").strip().lower() in ("", "y", "yes"):
             launch_app(resources)
     print("\n汉化完成！如界面有少量英文（AI 思考过程、模型名等属于刻意保留），"
           "可编辑 zh_data.json 增补词条后重新运行。")
@@ -3085,7 +3342,7 @@ def cleanup_temp(resources, work):
     shutil.rmtree(work, ignore_errors=True)
 
 
-def cmd_restore(resources, auto_yes=False):
+def cmd_restore(resources, auto_yes=False, no_kill=False):
     asar = os.path.join(resources, "app.asar")
     bak = asar + ".bak"
     print("=" * 62)
@@ -3107,10 +3364,18 @@ def cmd_restore(resources, auto_yes=False):
         die("备份文件本身已被汉化污染（非官方原版），拒绝执行恢复以免损坏。\n"
             "请重装 Antigravity 获取官方原版。")
     if asar_is_localized(asar):
-        kill_processes(auto=auto_yes, resources_dir=resources)
+        kill_processes(auto=auto_yes, resources_dir=resources, no_kill=no_kill)
     tmp = asar + ".restore.tmp"
-    shutil.copy2(bak, tmp)
-    os.replace(tmp, asar)
+    try:
+        shutil.copy2(bak, tmp)
+        os.replace(tmp, asar)
+    except PermissionError:
+        if IS_LINUX and _linux_replace_with_admin(bak, asar):
+            pass
+        elif IS_MAC and _mac_replace_with_admin(bak, asar):
+            pass
+        else:
+            raise
     log("已恢复官方英文原版", ok=True)
 
     # macOS：还原 asar 同样破坏了签名，必须重签，否则还原后反而打不开
@@ -3274,11 +3539,11 @@ def _http_get(url, timeout, binary=False):
 
 
 def _pick_zip(assets):
-    """按当前系统挑对应的 zip（包命名：...-windows-vX.Y.zip / ...-mac-vX.Y.zip）"""
-    key = "mac" if IS_MAC else "windows"
+    """按当前系统挑对应的压缩包（包命名：...-windows-vX.Y.zip / ...-mac-vX.Y.zip / ...-linux-vX.Y.*）"""
+    key = "mac" if IS_MAC else ("windows" if IS_WIN else "linux")
     for a in assets or []:
         name = (a.get("name") or "").lower()
-        if name.endswith(".zip") and key in name and a.get("browser_download_url"):
+        if (name.endswith(".zip") or name.endswith(".tar.gz")) and key in name and a.get("browser_download_url"):
             return a
     return None
 
@@ -3293,7 +3558,16 @@ def _pick_sums(assets):
 def _desktop_dir():
     """找桌面目录，找不到返回 None（调用方回退到脚本目录）"""
     home = os.path.expanduser("~")
-    cands = [os.path.join(home, "Desktop")]
+    cands = []
+    if IS_LINUX:
+        try:
+            r = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and r.stdout.strip():
+                cands.append(r.stdout.strip())
+        except Exception:
+            pass
+        cands.append(os.path.join(home, "桌面"))
+    cands.append(os.path.join(home, "Desktop"))
     if IS_WIN:
         cands.append(os.path.join(os.environ.get("USERPROFILE", home), "Desktop"))
         cands.append(os.path.join(home, "OneDrive", "Desktop"))
@@ -3498,8 +3772,9 @@ def _say_goodbye():
     关闭（Windows 的 pause 就是这么设计的），但必须让人看懂这是正常收尾。
     bat 那边因为编码限制只能写英文，所以这句中文在这里补上。
     """
+    launcher = "一键汉化.command" if IS_MAC else ("一键汉化.bat" if IS_WIN else "一键汉化.sh（或 antigravity-hanhua-linux）")
     print("\n  已退出。窗口会在你按任意键后关闭——这是正常结束，不是闪退。")
-    print("  想再操作一次，重新双击 一键汉化.bat 即可。")
+    print(f"  想再操作一次，重新运行 {launcher} 即可。")
 
 
 def menu_pause():
@@ -3527,7 +3802,8 @@ def menu_pause():
 def main():
     args = [a for a in sys.argv[1:]]
     auto_yes = "--yes" in args or "/y" in args
-    args = [a for a in args if a not in ("--yes", "/y")]
+    no_kill = "--no-kill" in args
+    args = [a for a in args if a not in ("--yes", "/y", "--no-kill")]
     path_override = None
     if "--path" in args:
         i = args.index("--path")
@@ -3547,13 +3823,13 @@ def main():
         npx = check_env()
         lock = acquire_lock()
         try:
-            cmd_apply(resources, npx, auto_yes)
+            cmd_apply(resources, npx, auto_yes, no_kill=no_kill)
         finally:
             release_lock(lock)
     elif cmd in ("restore", "r", "2"):
         lock = acquire_lock()
         try:
-            cmd_restore(resources, auto_yes)
+            cmd_restore(resources, auto_yes, no_kill=no_kill)
         finally:
             release_lock(lock)
     elif cmd in ("status", "s", "3"):

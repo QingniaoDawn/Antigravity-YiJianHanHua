@@ -7,3 +7,7 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+
+# 本地单文件编译产物与错误日志
+antigravity-hanhua-linux
+hanhua_error_log.txt
