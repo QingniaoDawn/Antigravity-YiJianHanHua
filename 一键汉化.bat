@@ -22,7 +22,7 @@ set "EXITCODE=1"
 
 echo.
 echo  ==============================================================
-echo    Antigravity YiJian HanHua v1.17.1
+echo    Antigravity YiJian HanHua v1.18.0
 echo  ==============================================================
 echo.
 
