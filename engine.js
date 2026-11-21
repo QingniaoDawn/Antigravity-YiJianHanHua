@@ -1,5 +1,5 @@
 // =============================================================================
-// Antigravity 一键汉化引擎 v1.11
+// Antigravity 一键汉化引擎 v1.12
 // 设计要点：
 //   - 纯 Web API（无 require/network），preload 沙箱环境可用
 //   - 多级瀑布翻译管道 + O(1) 缓存
@@ -77,7 +77,12 @@
     var DATE_MD_RE = new RegExp('\\b' + MONTH_ALT + '\\.?\\s+(\\d{1,2})\\b', 'g');
 
     // 时长归一化：配额提示里的 "3h54m47s" 要变成「3小时54分47秒」。
-    // 只在已含中文的短文本里跑，避免动到代码/标识符。
+    // 只在「确实被词典翻译过、且已含中文」的短文本里跑（见 translateString 的
+    // 恒等短路），避免动到模型正文/代码/标识符。
+    //
+    // 单字母单位必须**区分大小写**（/i 会带来一条真实事故：模型正文里的
+    // 「支持 1M 上下文」被 `(\d+)m` 当成 1 分钟，显示成「支持 1分 上下文」，
+    // 网友反馈的「1M 变 1分」就是这条规则。同理 "$5M" 会被改成 "$5分"）。
     var DUR_RULES = [
         // 组合长格式优先：「4 days, 12 hours」→「4 天 12 小时」（顺带吃掉中间的逗号）。
         [/(\d+)\s*days?\s*,\s*(\d+)\s*hours?/gi, function (m, a, b) { return a + '天' + b + '小时'; }],
@@ -93,9 +98,9 @@
         [/(\d+)\s*h\s*(\d+)\s*m\s*(\d+)\s*s/g, function (m, a, b, c) { return a + '小时' + b + '分' + c + '秒'; }],
         [/(\d+)\s*h\s*(\d+)\s*m/g, function (m, a, b) { return a + '小时' + b + '分'; }],
         [/(\d+)\s*m\s*(\d+)\s*s/g, function (m, a, b) { return a + '分' + b + '秒'; }],
-        [/(\d+)\s*h(?![a-z])/gi, function (m, a) { return a + '小时'; }],
-        [/(\d+)\s*m(?![a-z])/gi, function (m, a) { return a + '分'; }],
-        [/(\d+)\s*s(?![a-z])/gi, function (m, a) { return a + '秒'; }]
+        [/(\d+)\s*h(?![A-Za-z])/g, function (m, a) { return a + '小时'; }],
+        [/(\d+)\s*m(?![A-Za-z])/g, function (m, a) { return a + '分'; }],
+        [/(\d+)\s*s(?![A-Za-z])/g, function (m, a) { return a + '秒'; }]
     ];
 
     function normalizeDurations(s) {
@@ -142,14 +147,28 @@
         if (!LETTER_RE.test(trimmed)) return text; // 纯中文/数字/标点：零开销返回（收敛关键）
 
         var hit = cacheGet(trimmed);
-        if (hit !== undefined) return text.replace(trimmed, hit);
+        if (hit !== undefined) return text.replace(trimmed, function () { return hit; });
 
         var out = pipeline(trimmed);
+        // 恒等短路：词典根本没翻译这条文本时，**绝不能**再做日期/时长归一化。
+        // 2.34.0 之前这里无条件跑 normalizeDurations，于是模型正文里任何含中文的
+        // 句子都会被改写（「1M → 1分」「$5M → $5分」）。归一化只服务于我们自己的
+        // 译文，原文不该被碰。
+        //
+        // 但 fixMacKeys 要保留：它只把 Ctrl/Alt/Cmd 换成 Mac 键名，是纯展示层修正，
+        // 旧版对未翻译文本也生效（例如模型名旁的「Cmd+Enter」提示）。
+        // 去掉它会变成 Mac 上少改一处键名，属于无意的行为回退。
+        if (out === trimmed) {
+            var same = fixMacKeys(out);
+            cachePut(trimmed, same);
+            return same === out ? text : text.replace(trimmed, function () { return same; });
+        }
         out = normalizeDates(out);
         out = normalizeDurations(out);
         out = fixMacKeys(out);
         cachePut(trimmed, out);
-        return text.replace(trimmed, out);
+        // 用函数形式回填：译文里若含 $& / $1 等字符，字符串替换会被当成占位符
+        return text.replace(trimmed, function () { return out; });
     }
 
     // ---------------- 3.1 原生菜单标签翻译 ----------------
@@ -301,6 +320,50 @@
         'monaco-editor', 'editor-instance', 'input-area', 'chat-input'];
     var ACTION_PILL_RE = /^(Explored|Ran|Viewed|Edited|Thought|Thinking|Working)$/i;
 
+    // 对话正文隔离选择器（v1.18 新增，修复「连对话也被翻译」）。
+    // 背景：老版本靠 THINK_CONTAINER 里的 chat-message-view / prose / stream-markdown-body
+    // 这些**类名**兜底，但 2.33/2.34 的官方包里这些类名一个都不存在（全量 grep 计数为 0），
+    // 而 data-message-id 也不再出现 —— 于是模型回复整段进了翻译管道：
+    //   · 正文里的普通英文单词被词典/核心词逐个替换；
+    //   · 含中文时 normalizeDurations 会把 "1M" 当 1 分钟改成「1分」（网友反馈的原句）。
+    // 现在用官方稳定的结构标识做物理隔离：data-markdown-root 是 Markdown 渲染根，
+    // 只有消息/转录/自动化说明这类**内容**会用到它；界面文案不在这棵树里。
+    var CONTENT_SEL = [
+        '[data-testid="conversation-view"] [data-markdown-root]',
+        '[data-testid="agent-response"] [data-markdown-root]',
+        '[data-testid="user-message"] [data-markdown-root]',
+        '[data-testid="live-transcript"] [data-markdown-root]',
+        '[data-testid="voice-transcript-card"] [data-markdown-root]',
+        '[data-testid="side-question-tab-conversation"] [data-markdown-root]',
+        '[data-testid="subagent-tab-conversation"] [data-markdown-root]',
+        '[data-testid="automation-instructions-markdown"]',
+        // 纯文本形态的内容节点（不走 Markdown 渲染器）
+        '[data-testid="user-message-content"]',
+        '[data-testid="transcript-line-text"]',
+        '[data-testid="transcript-work-line"]',
+        // 智能体自己写的计划清单（标题由模型生成，不是界面文案）
+        '[data-testid="step-plan"]'
+    ].join(',');
+
+    // 判定结果按元素缓存：每次全量扫描会对同一个元素问两遍
+    //（translateAttrs 一次 + judgeElement 一次），一次 closest 带 12 个后代选择器
+    // 在深层 DOM 上并不便宜，缓存后开销减半。
+    var contentCache = new WeakMap();
+
+    function inContentRoot(element) {
+        // 只缓存 true：正文节点会被反复问到（一次扫描会问两遍），缓存收益大；
+        // false 不缓存，避免元素被 React 挪进正文容器后仍用旧结论去翻内容。
+        if (contentCache.get(element)) return true;
+        var verdict = false;
+        try {
+            verdict = !!(element.closest && element.closest(CONTENT_SEL));
+        } catch (e) {
+            verdict = false;
+        }
+        if (verdict) contentCache.set(element, true);
+        return verdict;
+    }
+
     var skipCache = new WeakMap();
 
     function shouldSkipNode(node) {
@@ -329,6 +392,9 @@
             element.getAttribute('contenteditable') === 'true' ||
             element.getAttribute('role') === 'textbox' ||
             element.getAttribute('data-lexical-editor') === 'true')) return true;
+
+        // 2.4 对话正文物理隔离（模型输出 / 历史用户消息 / 转录内容）
+        if (inContentRoot(element)) return true;
 
         // 2.5 用户消息操作条放行：时间戳（"19m ago"）和复制/编辑按钮是界面元素，
         //     不是用户输入的内容；但它挂在 user-input-step / data-message-id 子树里，
@@ -401,6 +467,8 @@
     // 即使元素位于输入区/思考链等跳过区也可以安全翻译（ATTRS 不含 value/aria-label）
     function translateAttrs(node) {
         if (!node.hasAttribute) return;
+        // 对话正文里的属性（链接 title、图片 alt 等）属于内容，同样不碰
+        if (inContentRoot(node)) return;
         for (var a = 0; a < ATTRS.length; a++) {
             var attr = ATTRS[a];
             if (node.hasAttribute(attr)) {
@@ -411,6 +479,32 @@
                 }
             }
         }
+    }
+
+    // 相邻文本节点整句翻译。
+    // 为什么需要：React 的 JSX 经常把一句话拆成多个文本子节点，例如自动化页空状态
+    //   `"No ", v1.emptyMessagePlural, " yet"` → DOM 里是三个文本节点。
+    // 逐节点翻译只能得到「否 自动化 yet」，整句永远匹配不上词典。
+    // 处理方式：节点数量**不变**（译文写进第一个节点，其余置空），React 卸载时
+    // 仍能按原索引找到所有节点，不会出 removeChild 之类的错误。
+    function translateTextRun(el) {
+        var kids = el.childNodes;
+        if (!kids || kids.length < 2 || kids.length > 8) return false;
+        var total = '';
+        for (var i = 0; i < kids.length; i++) {
+            if (kids[i].nodeType !== 3) return false;
+            total += kids[i].nodeValue || '';
+        }
+        var trimmed = total.trim();
+        if (!trimmed || trimmed.length > 140) return false;
+        if (trimmed.indexOf(' ') < 0) return false;      // 单词无需整句处理
+        if (!LETTER_RE.test(trimmed)) return false;
+        var out = translateString(total);
+        if (out === total) return false;
+        kids[0].nodeValue = out;
+        for (var j = 1; j < kids.length; j++) kids[j].nodeValue = '';
+        for (var k2 = 0; k2 < kids.length; k2++) translatedNodes.add(kids[k2]);
+        return true;
     }
 
     function translateNode(node) {
@@ -445,6 +539,7 @@
                 observeRoot(node.shadowRoot);
                 translateNode(node.shadowRoot);
             }
+            try { if (translateTextRun(node)) return; } catch (_) {}
             for (var c2 = 0; c2 < node.childNodes.length; c2++) {
                 translateNode(node.childNodes[c2]);
             }
@@ -675,7 +770,7 @@
 
     // 调试句柄（F12 控制台可用 window.__AGY_ZH_DEBUG__.stats() 查看运行状态）
     window.__AGY_ZH_DEBUG__ = {
-        version: '1.11.0',
+        version: '1.12.0',
         stats: function () {
             return {
                 active: true,
@@ -688,6 +783,9 @@
         },
         rescan: safeScan,
         translate: translateString,
-        translateLabel: translateLabel
+        translateLabel: translateLabel,
+        // 供离线回归使用：判断某个元素是否会被跳过（不产生副作用）
+        shouldSkip: function (el) { return judgeElement(el); },
+        translateNode: translateNode
     };
 })();
