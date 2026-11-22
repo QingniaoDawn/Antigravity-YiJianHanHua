@@ -56,13 +56,13 @@
 | 你的系统 | 用哪个 | 启动方式 |
 |---|---|---|
 | **Windows** | 仓库根目录的 `一键汉化.bat` | 双击即用 |
-| **macOS** | [`mac/`](mac/) 目录 | 右键 `一键汉化.command` → 选择「打开」 |
-| **Linux** | 仓库根目录的 `一键汉化.sh` 或 [`linux/`](linux/) 目录 | 终端执行 `./一键汉化.sh`（详见 [linux/README.md](linux/README.md)） |
+| **macOS** | [`mac/`](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/tree/main/mac) 目录 | 右键 `一键汉化.command` → 选择「打开」 |
+| **Linux** | 仓库根目录的 `一键汉化.sh` 或 [`linux/`](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/tree/main/linux) 目录 | 终端执行 `./一键汉化.sh`（详见 [linux/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/linux/README.md)） |
 
 三个平台共用同一套引擎与词典（词条量、覆盖范围、备份策略完全一致），
 `localize.py` 会自动识别当前系统走对应分支。
 
-> macOS 用户请看 **[mac/README.md](mac/README.md)**，里面讲清了代码签名这件事，
+> macOS 用户请看 **[mac/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/mac/README.md)**，里面讲清了代码签名这件事，
 > 以及遇到「应用已损坏」怎么办。
 
 ## 为什么选这个
@@ -102,7 +102,7 @@
   没装则自动走结构自检。`npx` 也只用于官方 asar 工具，
   没有 Node.js 时直接用内置打包器（**全程离线**）
 
-**macOS**（详见 [mac/README.md](mac/README.md)）：
+**macOS**（详见 [mac/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/mac/README.md)）：
 
 - macOS 12+ + 已安装 Antigravity
 - Python 3.8+（`brew install python`）—— **必需**
@@ -110,7 +110,7 @@
 - **Xcode 命令行工具**（`xcode-select --install`）——提供 `codesign`/`xattr`，
   没有它汉化后 App 会打不开，主程序会在汉化前明确报错
 
-**Linux**（详见 [linux/README.md](linux/README.md)）：
+**Linux**（详见 [linux/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/linux/README.md)）：
 
 - Linux x86_64 + 已安装 Antigravity
 - Python 3.8+（多数发行版自带；没有就用包管理器装）—— **必需**
@@ -156,7 +156,7 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 **macOS 特别注意**：Mac 的更新组件在安装新版前会校验「当前 App 的代码身份」，
 真正替换文件时还要靠 App 内的 `ShipIt` 安装器。重签时这两处会一并处理，
 日志与「查看状态」会如实显示更新能力；如果显示不可用，请从官网下载新版覆盖安装，再重新汉化。
-详细机制见 [mac/README.md](mac/README.md#q重签名会不会影响我以后更新-antigravity)。
+详细机制见 [mac/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/mac/README.md#q重签名会不会影响我以后更新-antigravity)。
 
 **可以连续操作**：每个操作做完会停一下让你看结果，按回车就回到主菜单，接着选下一项即可
 （比如先「查看状态」再「一键汉化」，或者「汉化 → 恢复英文 → 再汉化」）。
@@ -176,7 +176,7 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 
 > 上表中 WSL 相关的 3 处弹窗是 **Windows 专属**，macOS 与 Linux 版本没有 WSL，
 > 因此那几处在 Mac / Linux 上不会命中（脚本会明确说明"属正常现象"，不会报错）。
-> 其余词条三平台通用。详见 [mac/README.md](mac/README.md#与-windows-版的两点客观差异不是缺陷)。
+> 其余词条三平台通用。详见 [mac/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/mac/README.md#与-windows-版的两点客观差异不是缺陷)。
 
 ### 版本适配
 
@@ -237,13 +237,13 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 2. **运行前会自动关闭 Antigravity**：汉化和还原都需要先关闭应用，脚本会自动处理，不用手动关。
 3. **备份文件别手动删**：安装目录里的 `app.asar.bak` 是还原用的官方原版备份，脚本会自动维护它。
 4. **官方大版本更新后**：个别词条可能暂时失效（脚本会安全跳过，不报错不损坏），界面主体翻译不受影响；等本工具适配更新即可。
-5. **支持 Windows、macOS 与 Linux**：Linux 版已补齐 `/proc/<pid>/exe` 精确进程识别、POSIX 原子热替换（`--no-kill`）、多安装路径自动探测与 `sudo`/`pkexec` 提权支持（详见 [linux/README.md](linux/README.md)）。
+5. **支持 Windows、macOS 与 Linux**：Linux 版已补齐 `/proc/<pid>/exe` 精确进程识别、POSIX 原子热替换（`--no-kill`）、多安装路径自动探测与 `sudo`/`pkexec` 提权支持（详见 [linux/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/linux/README.md)）。
 6. **macOS 额外说明**：Mac 会对 `.app` 做代码签名，改包必然导致签名失效，
    本工具已在汉化/还原后自动重新签名（保留 Electron 运行必需的 entitlements），
    并写入稳定的代码身份，让官方应用内更新不被 Squirrel 拒绝
-   （是否写入成功会在日志里明确显示，见 [mac/README.md](mac/README.md)）。
+   （是否写入成功会在日志里明确显示，见 [mac/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/mac/README.md)）。
    若弹出管理员密码框属正常流程；万一提示"应用已损坏"，见
-   [mac/README.md](mac/README.md#q汉化完提示应用已损坏无法打开) 的一键修复命令。
+   [mac/README.md](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/blob/main/mac/README.md#q汉化完提示应用已损坏无法打开) 的一键修复命令。
 7. **本工具属于非官方第三方魔改**：介意"改动软件本体"的用户请勿使用；使用即表示了解并接受这一点。
 8. **认准唯一下载渠道**：请只从本仓库 Release 页下载，其他渠道的打包可能被动手脚。
 9. **解压路径别太深**：Windows 传统路径上限约 260 个字符，

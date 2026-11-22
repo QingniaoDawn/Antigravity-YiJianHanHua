@@ -1,5 +1,5 @@
 @echo off
-rem Antigravity One-Click Chinese Localization (Windows / macOS)
+rem Antigravity One-Click Chinese Localization (Windows entry)
 rem Run this file again after every official Antigravity update.
 rem
 rem IMPORTANT: keep this file pure ASCII, no CJK characters anywhere.

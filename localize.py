@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Antigravity 一键汉化 __VERSION__（Windows / macOS 双平台）
+Antigravity 一键汉化 __VERSION__（Windows / macOS / Linux 三平台）
 ================================================
 用法：
   python localize.py            # 交互菜单
@@ -9,7 +9,7 @@ Antigravity 一键汉化 __VERSION__（Windows / macOS 双平台）
   python localize.py status     # 查看状态
   python localize.py chinese-output   # AI 回复中文化（写入全局规则）
   python localize.py update           # 检查更新（查 GitHub Release，只下载不替换）
-  可选：--path <安装目录>  --yes（免确认）
+  可选：--path <安装目录>  --yes（免确认）  --no-kill（仅 Linux：不关进程直接热替换）
 
 流程：杀进程 → 备份 → 解包 → 注入 → 语法门禁 → 打包 → 部署后复检 → 原子替换
       →（macOS 追加）代码签名重签 → 启动
@@ -18,16 +18,33 @@ Antigravity 一键汉化 __VERSION__（Windows / macOS 双平台）
       所有修改幂等可重入；备份永不降级。
 
 跨平台说明：
-  本脚本为 Windows / macOS 双平台共用，按当前系统自动走对应分支。
-  macOS 与 Windows 的三处关键差异已内置处理：
+  本脚本为 Windows / macOS / Linux 三平台共用，按当前系统自动走对应分支。
+
+  三平台共通的差异处理：
+    1. 安装路径：按平台各自的常见位置自动探测，找不到时用 --path 指定
+    2. 进程管理：三平台都按**可执行文件真实路径**精确匹配，绝不误杀同名进程
+       （Windows 比对 exe 路径；macOS 比对 .app 内二进制路径；
+        Linux 读 /proc/<pid>/exe 内核符号链接）
+
+  macOS 特有的两处：
     1. 安装路径：/Applications/Antigravity.app/Contents/Resources
-    2. 进程管理：按完整可执行路径精确匹配，绝不误杀同名进程
-    3. 代码签名：改 asar 会使 Apple 签名失效，必须重签，否则 App 打不开
+    2. 代码签名：改 asar 会使 Apple 签名失效，必须重签，否则 App 打不开
        （Apple Silicon 上直接启动失败）。重签采用 Apple 推荐的分层方式：
        嵌套组件裸签 → 主包带 entitlements 签。
        主包额外用 -r 写入稳定的代码身份（只锚定签名标识），否则 ad-hoc
        默认身份锚定在二进制哈希上，Squirrel 会拒绝官方应用内更新。
        写入失败自动回退普通重签；全程需管理员密码。
+
+  Linux 特有的三处：
+    1. 原子热替换：POSIX os.replace() 在同文件系统内是原子的，所以进程没退出
+       也能换掉 app.asar，重启一次应用即生效（--no-kill，或在交互提示里选 h）。
+       在 Antigravity 内置终端里运行时，脚本会回溯 /proc/<pid>/status 的 PPid
+       祖先链，自动识别「杀了就等于杀自己」，直接走热替换。
+    2. 系统目录提权：装在 /opt、/usr/lib 这类普通用户无写权限的位置时，
+       解包/注入/语法门禁/打包复检全在临时目录完成，只有最后写备份与原子替换
+       一步才调 sudo / pkexec。写入权限位沿用目标文件的原有 mode。
+    3. 启动方式：剥离 ELECTRON_RUN_AS_NODE 后以独立会话（setsid）后台启动，
+       避免 Electron 应用被当成 Node 解释器。
 """
 import hashlib
 import json
