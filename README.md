@@ -1,27 +1,29 @@
 # Antigravity 一键汉化
 
-> Google Antigravity（Agentic IDE）**Windows / macOS** 一键汉化工具
+> Google Antigravity（Agentic IDE）**Windows / macOS / Linux** 一键汉化工具
 > **20871 翻译单元 · 双击即用 · 不装 Node.js 也能用 · 全程本地执行（仅走 npx 打包时会联网一次；没装 Node.js 时完全离线）· 永久免费**
 
 <p align="center">
   <a href="https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/QingniaoDawn/Antigravity-YiJianHanHua?label=release&color=2ea44f"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4">
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4">
   <img alt="units" src="https://img.shields.io/badge/%E7%BF%BB%E8%AF%91%E5%8D%95%E5%85%83-20871-blue">
 </p>
 
 ---
 
-## 下载（最新版 v1.18.1）
+## 下载（最新版 v1.19.0）
 
-> 适配 **Antigravity 2.34.0**（2.31.x 继续可用）· 更新于 2026-11-21
+> 适配 **Antigravity 2.34.0**（2.31.x 继续可用）· 更新于 2026-11-22
 
 | 你的系统 | 下载 | 启动方式 |
 |---|---|---|
 | **Windows** | **[下载 Windows 版](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases/latest)** | 解压 → 双击 `一键汉化.bat` |
 | **macOS** | **[下载 macOS 版](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases/latest)** | 解压 → 右键 `一键汉化.command` → 选择「打开」 |
+| **Linux** | **[下载 Linux 版](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases/latest)** | 解压 → 终端执行 `./一键汉化.sh`（已带可执行权限） |
 
 - 历史版本与每个版本的更新说明：**[Releases](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases)**
 - 每个 Release 都附 `SHA256SUMS.txt`；下载后可比对，程序内的「检查更新」也会自动校验
+- **v1.19.0 主要变化**：新增 **Linux 平台支持**（社区贡献 [PR #1](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/pull/1)）—— 用 `/proc/<pid>/exe` 内核符号链接精确识别进程，只关本次安装目录下的 Antigravity，**不会误杀其他编辑器的同名语言服务器**；支持 POSIX 原子热替换（`--no-kill`，在 Antigravity 内置终端里跑也不会把自己杀掉）；自动探测 `~/.local/share`、`/opt`、`/usr/lib` 等常见安装位置；`/opt` 等需 root 的目录通过 `sudo`/`pkexec` 只提权落盘一步。**Windows 与 macOS 的功能、产物字节完全不变**（已逐字节比对验证）
 - **v1.18.1 主要变化**：修掉「手动改过的会话标题会被汉化」——侧边栏、顶栏、项目名、侧问标签这些**用户自己起的名字**不再翻译；窗口标题也不再把 `Settings` 之类改成中文。设置弹窗等界面词照常翻，两者按渲染结构区分
 - **v1.18.0 主要变化**：适配 **Antigravity 2.34.0** —— 补齐模型编排器设置、侧边栏筛选与排序、
   输入框发送快捷键、内联卡片（备注 / 重试 / 多选）、屏幕锁定提示等 **101 条**新文案，
@@ -43,7 +45,7 @@
 [Antigravity](https://antigravity.google) 是 Google 出品的智能体编程 IDE，界面默认英文。
 本工具把它完整变成简体中文——不需要懂命令行，不需要会编程：
 
-- **双击 `一键汉化.bat`（Windows）/ `一键汉化.command`（macOS）**，按数字选功能
+- **双击 `一键汉化.bat`（Windows）/ `一键汉化.command`（macOS）/ 运行 `一键汉化.sh`（Linux）**，按数字选功能
 - 官方更新后界面变回英文？**再双击一次，重新汉化就好**
 - 想换回英文原版？**一键还原**，还原结果与官方原版字节级一致
 
@@ -55,8 +57,9 @@
 |---|---|---|
 | **Windows** | 仓库根目录的 `一键汉化.bat` | 双击即用 |
 | **macOS** | [`mac/`](mac/) 目录 | 右键 `一键汉化.command` → 选择「打开」 |
+| **Linux** | 仓库根目录的 `一键汉化.sh` 或 [`linux/`](linux/) 目录 | 终端执行 `./一键汉化.sh`（详见 [linux/README.md](linux/README.md)） |
 
-两个平台共用同一套引擎与词典（词条量、覆盖范围、备份策略完全一致），
+三个平台共用同一套引擎与词典（词条量、覆盖范围、备份策略完全一致），
 `localize.py` 会自动识别当前系统走对应分支。
 
 > macOS 用户请看 **[mac/README.md](mac/README.md)**，里面讲清了代码签名这件事，
@@ -68,7 +71,7 @@
 |---|---|
 | **词条量天花板** | 20871 翻译单元（主词典 20474 + 前缀规则 86 + 核心词 117 + 动态正则 120 + 菜单映射 74），规模远超目前市面上的同类汉化方案 |
 | **覆盖最全面** | 不只翻网页界面——原生菜单栏、**原生右键菜单**、系统托盘、系统弹窗、安装向导、权限确认弹窗、输入框提示、IDE 面板词条，全都翻 |
-| **双平台** | Windows 与 macOS 同一套脚本自动适配；macOS 版自动完成代码签名重签（Apple 官方推荐的分层方式），并写入稳定代码身份以保证官方应用内更新不被拒绝 |
+| **三平台** | Windows、macOS、Linux 同一套脚本自动适配；macOS 版自动完成代码签名重签（Apple 官方推荐的分层方式），并写入稳定代码身份以保证官方应用内更新不被拒绝 |
 | **真·一键** | 双击 → 数字菜单 → 完成。杀进程、备份、注入、校验、部署全自动，不需要敲任何命令 |
 | **官方更新不怕** | 独创"备份防降级"设计：官方更新后重汉化，备份自动升级为新版官方原版——还原永远不会把你退回旧版本 |
 | **安全干净** | 汉化全程本地操作，**零数据上传、零遥测**；不碰注册表/启动项/你的项目代码。联网只有两处且都透明：① 只有装了 Node.js 且走 `npx` 打包时，会从 npm 源取一次官方 asar 工具（约 3 MB，之后走本地缓存；**没装 Node.js 时直接用内置打包器，一次都不联网**）② 你主动点菜单 `5` 检查更新。写入前必做校验、部署后二次复检，任何一步不对就中止回滚 |
@@ -107,9 +110,18 @@
 - **Xcode 命令行工具**（`xcode-select --install`）——提供 `codesign`/`xattr`，
   没有它汉化后 App 会打不开，主程序会在汉化前明确报错
 
+**Linux**（详见 [linux/README.md](linux/README.md)）：
+
+- Linux x86_64 + 已安装 Antigravity
+- Python 3.8+（多数发行版自带；没有就用包管理器装）—— **必需**
+- Node.js 18+ —— **可选**，同上
+- 若 Antigravity 装在 `/opt` 或 `/usr/lib` 这类需要 root 的目录，
+  脚本会在最后落盘那一步弹出 `sudo`/`pkexec` 授权（前面所有工序都在临时目录以普通用户完成）
+
 ### 操作菜单
 
-Windows 双击 `一键汉化.bat`，macOS 右键 `一键汉化.command` →「打开」：
+Windows 双击 `一键汉化.bat`，macOS 右键 `一键汉化.command` →「打开」，
+Linux 在终端执行 `./一键汉化.sh`：
 
 | 选项 | 功能 |
 |---|---|
@@ -162,9 +174,9 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 - **权限确认弹窗**：一直允许 / 仅允许一次 / 拒绝 / 跳过 等全套按钮
 - **提示文案**：placeholder / title / 悬浮提示（`aria-label` 刻意不翻——宿主拿它当稳定标识，翻了会让「取消」按钮误提交）
 
-> 上表中 WSL 相关的 3 处弹窗是 **Windows 专属**，macOS 版本没有 WSL，
-> 因此那几处在 Mac 上不会命中（脚本会明确说明"属正常现象"，不会报错）。
-> 其余词条两平台通用。详见 [mac/README.md](mac/README.md#与-windows-版的两点客观差异不是缺陷)。
+> 上表中 WSL 相关的 3 处弹窗是 **Windows 专属**，macOS 与 Linux 版本没有 WSL，
+> 因此那几处在 Mac / Linux 上不会命中（脚本会明确说明"属正常现象"，不会报错）。
+> 其余词条三平台通用。详见 [mac/README.md](mac/README.md#与-windows-版的两点客观差异不是缺陷)。
 
 ### 版本适配
 
@@ -215,6 +227,8 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 | `zh_data.json` | 词典数据（**20871 翻译单元**，想补充词条改这个文件后重跑即可） |
 | `mac/一键汉化.command` | macOS 双击入口（自动找 Python3 / codesign；Node.js 有就用、没有也行） |
 | `mac/README.md` | macOS 专属说明与故障排查 |
+| `一键汉化.sh` | Linux 终端入口（自动找 Python3；Node.js 有就用、没有也行） |
+| `linux/README.md` | Linux 专属说明（路径探测、提权、`--no-kill` 热替换） |
 | `赞赏码.jpg` | 打赏码（自愿打赏，不影响任何功能） |
 
 ## 注意事项
@@ -223,7 +237,7 @@ Antigravity 官方更新后界面会变回英文——这是正常现象，不�
 2. **运行前会自动关闭 Antigravity**：汉化和还原都需要先关闭应用，脚本会自动处理，不用手动关。
 3. **备份文件别手动删**：安装目录里的 `app.asar.bak` 是还原用的官方原版备份，脚本会自动维护它。
 4. **官方大版本更新后**：个别词条可能暂时失效（脚本会安全跳过，不报错不损坏），界面主体翻译不受影响；等本工具适配更新即可。
-5. **支持 Windows 与 macOS**；Linux 暂不适用（脚本已预留分支，未做真机适配）。
+5. **支持 Windows、macOS 与 Linux**：Linux 版已补齐 `/proc/<pid>/exe` 精确进程识别、POSIX 原子热替换（`--no-kill`）、多安装路径自动探测与 `sudo`/`pkexec` 提权支持（详见 [linux/README.md](linux/README.md)）。
 6. **macOS 额外说明**：Mac 会对 `.app` 做代码签名，改包必然导致签名失效，
    本工具已在汉化/还原后自动重新签名（保留 Electron 运行必需的 entitlements），
    并写入稳定的代码身份，让官方应用内更新不被 Squirrel 拒绝
@@ -312,7 +326,7 @@ npm config set cache "%LOCALAPPDATA%\npm-cache"
 - **只动该动的**：仅读写 Antigravity 安装目录内的文件；不碰注册表、系统服务、启动项、驱动，不碰你的项目代码和 Antigravity 用户数据
 - **可完全还原**：一键还原到官方原版，字节级一致；备份永不降级（官方更新后自动升级备份）
 - **坏不了**：写入前必做校验（有 Node.js 用 `node --check`，没有用结构自检），部署后二次解包复检，任一环节失败立即中止并回滚；部署采用原子替换，不存在"改到一半"的状态
-- **不误伤别的软件**：身份守卫校验目标确实是 Antigravity 才动手；杀进程只杀 Antigravity 安装目录下的进程（macOS 按完整可执行路径精确匹配，绝不误杀同名程序）
+- **不误伤别的软件**：身份守卫校验目标确实是 Antigravity 才动手；杀进程只杀 Antigravity 安装目录下的进程（macOS 按完整可执行路径精确匹配；Linux 读 `/proc/<pid>/exe` 内核符号链接比对真实路径；Windows 按可执行文件路径比对 —— 三平台都绝不误杀同名程序）
 - **macOS 签名如实告知**：改包会破坏 Apple 代码签名，本工具自动重签并校验；
   重签用的是临时签名而非 Google 官方签名，不影响官方更新（更新后重跑一次即可）
 - **输入内容绝对安全**：输入框、代码区、思考链物理隔离，词典翻译永远触碰不到你输入和生成的内容
