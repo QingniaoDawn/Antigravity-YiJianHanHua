@@ -3798,7 +3798,7 @@ def _say_goodbye():
     关闭（Windows 的 pause 就是这么设计的），但必须让人看懂这是正常收尾。
     bat 那边因为编码限制只能写英文，所以这句中文在这里补上。
     """
-    launcher = "一键汉化.command" if IS_MAC else ("一键汉化.bat" if IS_WIN else "一键汉化.sh（或 antigravity-hanhua-linux）")
+    launcher = "一键汉化.command" if IS_MAC else ("一键汉化.bat" if IS_WIN else "一键汉化.sh")
     print("\n  已退出。窗口会在你按任意键后关闭——这是正常结束，不是闪退。")
     print(f"  想再操作一次，重新运行 {launcher} 即可。")
 

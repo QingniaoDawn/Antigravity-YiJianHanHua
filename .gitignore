@@ -8,6 +8,5 @@ Thumbs.db
 .idea/
 .vscode/
 
-# 本地单文件编译产物与错误日志
-antigravity-hanhua-linux
+# 本地错误日志（内含环境变量片段，不进仓库）
 hanhua_error_log.txt
