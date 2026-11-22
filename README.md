@@ -21,7 +21,7 @@
 | **macOS** | **[下载 macOS 版](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases/latest)** | 解压 → 右键 `一键汉化.command` → 选择「打开」 |
 | **Linux** | **[下载 Linux 版](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases/latest)** | 解压 → 终端执行 `./一键汉化.sh`（已带可执行权限） |
 
-- 历史版本与每个版本的更新说明：**[Releases](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases)**
+- 更早版本的更新说明：[**Releases**](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/releases)（下面只列最近三个版本，完整历史都在 Releases 里）
 - 每个 Release 都附 `SHA256SUMS.txt`；下载后可比对，程序内的「检查更新」也会自动校验
 - **v1.19.0 主要变化**：新增 **Linux 平台支持**（社区贡献 [PR #1](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/pull/1)）—— 用 `/proc/<pid>/exe` 内核符号链接精确识别进程，只关本次安装目录下的 Antigravity，**不会误杀其他编辑器的同名语言服务器**；支持 POSIX 原子热替换（`--no-kill`，在 Antigravity 内置终端里跑也不会把自己杀掉）；自动探测 `~/.local/share`、`/opt`、`/usr/lib` 等常见安装位置；`/opt` 等需 root 的目录通过 `sudo`/`pkexec` 只提权落盘一步。**Windows 与 macOS 的功能、产物字节完全不变**（已逐字节比对验证）
 - **v1.18.1 主要变化**：修掉「手动改过的会话标题会被汉化」——侧边栏、顶栏、项目名、侧问标签这些**用户自己起的名字**不再翻译；窗口标题也不再把 `Settings` 之类改成中文。设置弹窗等界面词照常翻，两者按渲染结构区分
@@ -32,13 +32,6 @@
   `data-markdown-root` 物理隔离，对话内容、计划清单、语音转录一律不再改动；
   **修复「1M 变成 1分」**：时长归一化的单字母单位改为区分大小写，并只在**确实翻译过**的文本上生效；
   另新增「相邻文本节点整句翻译」，修掉 React 拆句导致的「否 自动化 yet」这类半截译文
-- **v1.17.1 主要变化**：不再强制要求安装 Node.js —— 没装 Node 的机器以前会直接报错退出，现在改用内置结构自检（注入块配对、文件完整性）继续完成汉化；装了 Node 的仍走完整 `node --check` 语法校验，行为不变。另外修掉「还原时用旧备份覆盖新版本」导致 asar 与 exe 版本错配的隐患
-- **v1.17 主要变化**：适配 **Antigravity 2.33.0** —— 补齐 SSH 远程主机、内置浏览器数据清理、
-  快捷键设置页、侧问 /btw、麦克风与语音、GitHub PR 等 **206 条**新文案；修掉 42 条中英混杂
-  （如「停止 SSH Server…」这类半截译文）；新增 **75 条原生层文案**（SSH 连接错误、主机密钥确认、
-  设备选择器等），并修好 SSH 远程窗口里右键菜单保持英文的问题
-- **v1.16 主要变化**：修 macOS 端「点『重启以更新』后应用退出、既不安装也不重启」——
-  重签时把 `Squirrel.framework` 里的 `ShipIt` 安装器一并补签
 
 ## 这是什么
 
