@@ -599,10 +599,16 @@ def _probe_node(path):
                            encoding="utf-8", errors="replace")
     except Exception:
         return None
-    ver = (r.stdout or "").strip()
-    if r.returncode != 0 or not ver.startswith("v"):
+    if r.returncode != 0:
         return None
-    return ver.splitlines()[0].strip()
+    # 正常输出只有一行 "v26.13.1"。但有的包装脚本会先打一行警告再输出版本，
+    # 所以扫描所有行、取第一个形如 vX.Y 的，比只认第一行宽容；一个都匹配不上
+    # 才判为不可用（保守失败，最坏情况只是降级到结构自检，不影响汉化结果）。
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if re.match(r"^v\d+\.\d+", line):
+            return line
+    return None
 
 
 def check_env():
@@ -625,6 +631,11 @@ def check_env():
     node = shutil.which("node")
     npx = shutil.which("npx")
     NODE_PROBED = True
+    # 每次探测都先清空上一次的结果。菜单模式下 [1] 可以被反复点，
+    # 不清空的话：第一次成功、第二次失败（用户中途卸载或改了 PATH）时，
+    # NODE_OK / NODE_BIN 会留着旧值，语法门禁就会拿一个已失效的路径去跑。
+    NODE_OK = False
+    NODE_BIN = None
     if node:
         # 关键：which 只说明"PATH 里有个叫 node 的东西"，不等于"它能被启动"。
         # 必须实测一次，否则坏掉的 node 会让后面每个文件都报 WinError 2。
