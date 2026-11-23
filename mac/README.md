@@ -83,9 +83,11 @@ python3 localize.py apply --path "/Applications/Antigravity.app"   # 指定路�
 - 已安装 Antigravity（默认在 `/Applications`，其他常见位置也能自动找到）
 - **Python 3.8+**：终端执行 `brew install python`
 - **Node.js 18+（可选，不装也能汉化）**：想装就 `brew install node`。
-  有 `node` 时主程序会对改完的 JS 跑 `node --check` 做**语法级**校验；
-  没有则自动改用**结构自检**（注入块配对、文件完整性），汉化内容完全一样，
-  只是抓不到细微语法错。`npx` 也只用于官方 asar 工具，不可用时自动改用内置打包器
+  有 `node` 且**能正常启动**时，主程序会对改完的 JS 跑 `node --check` 做**语法级**校验；
+  没有、或装了但启动不起来（残留的失效链接、卸载后的别名），则自动改用
+  **结构自检**（注入块配对、文件完整性），汉化内容完全一样，只是抓不到细微语法错。
+  v1.19.1 起「能不能启动」是实测的，不再只检查 PATH 里有没有这个名字。
+  `npx` 也只用于官方 asar 工具，不可用时自动改用内置打包器
 - **Xcode 命令行工具**：终端执行 `xcode-select --install`
   （提供 `codesign` / `xattr`，**没有它汉化后 App 会打不开**，务必确认已装）
 

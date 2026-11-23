@@ -173,11 +173,14 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.19.0"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.19.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.34.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2 / 2.33.0；2.34.0 为离线全量验证 + 运行态抽查）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
-NODE_OK = False                     # check_env() 探测结果：有 node 才做 node --check，否则走结构自检
+NODE_OK = False                     # check_env() 探测结果：node 不仅存在，而且实测能跑起来
+NODE_BIN = None                     # 可用的 node 绝对路径。node_check 一律用它，不用裸 "node"
+NODE_PROBED = False                 # check_env() 是否已执行过（用来区分"主动降级"和"漏调用"）
+NODE_INFO = "尚未检测"               # 一句话描述探测结果，写进失败日志供排障
 
 # --- 检查更新（全程序唯一的联网入口，仅当用户主动点「检查更新」才会触发）---
 UPDATE_REPO = "QingniaoDawn/Antigravity-YiJianHanHua"
@@ -260,6 +263,7 @@ def _collect_env_snapshot():
         lines.append(f"输出编码  : {getattr(sys.stdout, 'encoding', '?')}")
         lines.append(f"工作目录  : {os.getcwd()}")
         lines.append(f"脚本目录  : {SCRIPT_DIR}")
+        lines.append(f"Node探测  : {NODE_INFO}")
         lines.append(f"Python路径: {os.environ.get('PATH', '')[:600]}")
     except Exception as e:
         lines.append(f"(环境快照收集失败: {e})")
@@ -573,24 +577,70 @@ def probe_npm_cache():
     return None
 
 
+NODE_PROBE_TIMEOUT = 15     # 实测 node 能不能跑起来时的超时（秒）
+
+
+def _probe_node(path):
+    """实测这个 node 到底能不能跑起来：能就跑一次 --version 返回版本号，不能返回 None。
+
+    为什么不能只靠 shutil.which()：它只证明"PATH 里有个叫 node 的东西"，
+    不证明"这个东西能被启动"。Windows 上有两种典型翻车方式——
+      1. which 会按 PATHEXT 匹配到 node.CMD / node.BAT 这类包装脚本，
+         而 subprocess 走 CreateProcess 只认 .exe，于是每个文件都抛
+         [WinError 2] 系统找不到指定的文件；
+      2. 商店版 Node 卸载后残留的 %LOCALAPPDATA%\\Microsoft\\WindowsApps\\node.exe
+         执行别名——文件还在，但它指向的目标已经没了，报错同样是 WinError 2。
+    2026-11-23 有用户正是撞上第 1 种：工具连报 9 次"语法校验失败"后中止，
+    观感像汉化包坏了，实际原 app.asar 一个字节都没改。实测一次即可彻底避免。
+    """
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True,
+                           timeout=NODE_PROBE_TIMEOUT,
+                           encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    ver = (r.stdout or "").strip()
+    if r.returncode != 0 or not ver.startswith("v"):
+        return None
+    return ver.splitlines()[0].strip()
+
+
 def check_env():
     """检查运行环境：node（打包后语法门禁，可选）+ npx（官方 asar 工具，可选）+ macOS 签名工具。
 
     关于 node：2026-11-19 起不再强制。原先是硬依赖——"改完的 JS 能不能解析"
     只有 node --check 能可靠回答。但这样把绝大多数不装开发工具的普通用户挡在门外，
     而注入内容本身是固定的、发布前已做过完整语法校验。现在改成：
-      有 node  → 照旧跑 node --check（最严格）
-      无 node  → 走 structure_check() 结构自检（注入块配对 / 文件完整性），并明确告知
+      有可用的 node  → 照旧跑 node --check（最严格）
+      没有 / 跑不起来 → 走 structure_check() 结构自检（注入块配对 / 文件完整性），并明确告知
+
+    "能跑起来"是必须实测的：shutil.which() 只能证明 PATH 里有这个文件。
+    v1.19.1 起把判定改成"实测 node --version 成功"——否则 PATH 里一个
+    失效的 node.cmd 或商店版残留别名，会让语法门禁把每个文件都判成失败。
 
     npx 只影响"用哪种方式打包"：npm 缓存不可写时会被自动跳过，改走内置打包器。
 
     macOS 的 codesign 仍是硬依赖：不签名 App 直接打不开，没有替代方案。"""
-    global NODE_OK
+    global NODE_OK, NODE_BIN, NODE_PROBED, NODE_INFO
     node = shutil.which("node")
     npx = shutil.which("npx")
+    NODE_PROBED = True
     if node:
-        NODE_OK = True
+        # 关键：which 只说明"PATH 里有个叫 node 的东西"，不等于"它能被启动"。
+        # 必须实测一次，否则坏掉的 node 会让后面每个文件都报 WinError 2。
+        ver = _probe_node(node)
+        if ver:
+            NODE_OK = True
+            NODE_BIN = node
+            NODE_INFO = f"{node} → {ver}（语法级校验已启用）"
+        else:
+            NODE_INFO = f"{node} → 无法启动，已降级为结构自检"
+            log(f"检测到 node（{node}），但它启动不了，本次按「没有 Node.js」处理", warn=True)
+            log("  常见原因：PATH 里是失效的 node.cmd / node.bat 包装脚本、商店版 Node", warn=True)
+            log("  卸载后残留的执行别名，或版本管理器留下的失效链接。", warn=True)
+            log("  这不影响汉化：已改用内置结构自检，翻译内容和结果完全一样。", warn=True)
     else:
+        NODE_INFO = "PATH 里没有 node（已降级为结构自检）"
         log("未检测到 Node.js：跳过 node --check，改用内置结构自检", warn=True)
         log("  （汉化本身不需要 Node.js；装上它可获得更严格的语法校验，可选）", warn=True)
     if not npx:
@@ -1202,21 +1252,23 @@ def node_check(files):
     任何异常都视为"校验不通过"——宁可中止，也不能让未校验的产物部署。
     没有 node 时返回空列表，由 structure_check() 接管（调用方负责提示差异）。"""
     if not NODE_OK:
-        # 安全阀：只有"系统里确实没有 node"才允许降级到结构自检。
-        # 若机器上有 node 却没启用语法校验，说明调用方漏掉了 check_env()，
-        # 这种情况必须中止——否则会静默降级，把最严格的校验悄悄关掉。
-        if shutil.which("node") is not None:
-            die("内部错误：系统里有 node，但语法校验未启用（漏调 check_env）。\n"
+        # 安全阀：降级只允许发生在 check_env() 已经探测过、并且确认 node 不可用之后。
+        # 没探测过就走到这里，说明调用方漏掉了 check_env()——那种情况必须中止，
+        # 否则会把最严格的语法校验悄悄关掉。
+        if not NODE_PROBED:
+            die("内部错误：node 探测未执行（漏调 check_env）。\n"
                 "  为避免在未校验的情况下改动程序，已中止，原文件未被修改。\n"
                 "  请把这句话反馈给维护者。")
         return []
     bad = []
     for f in files:
         try:
-            r = subprocess.run(["node", "--check", f], capture_output=True, text=True,
+            # 用绝对路径而不是裸 "node"：PATH 里可能有同名干扰项，
+            # 而且 CheckEnv 已经验证过这个路径能启动，没必要再赌一次 PATH 解析。
+            r = subprocess.run([NODE_BIN, "--check", f], capture_output=True, text=True,
                                encoding='utf-8', errors='replace')
         except Exception as e:
-            bad.append((f, f"无法执行 node --check：{e}"))
+            bad.append((f, f"无法执行 node --check（{NODE_BIN}）：{e}"))
             continue
         if r.returncode != 0:
             bad.append((f, (r.stderr or r.stdout)[-500:]))

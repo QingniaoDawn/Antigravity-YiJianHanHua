@@ -19,10 +19,24 @@ rem Exit code must be initialized explicitly: cmd inherits the parent
 rem environment, and a leftover EXITCODE=0 would make every failure below
 rem look like success, closing the window without any message.
 set "EXITCODE=1"
+set "TOOLVER="
+
+rem Version in the banner comes from localize.py, never hard-coded here.
+rem Lesson (v1.19.0): localize.py said v1.19.0 but the banner still printed
+rem v1.18.1, so a user's bug report was filed against the wrong version.
+rem tokens=3 splits  TOOL_VERSION = "vX.Y.Z"  into its third field, then the
+rem next line strips the surrounding quotes.
+for /f "tokens=3" %%v in ('findstr /b /c:"TOOL_VERSION" localize.py 2^>nul') do if not defined TOOLVER set "TOOLVER=%%v"
+if defined TOOLVER set "TOOLVER=%TOOLVER:"=%"
 
 echo.
 echo  ==============================================================
-echo    Antigravity YiJian HanHua v1.18.1
+if not defined TOOLVER goto :BANNER_PLAIN
+echo    Antigravity YiJian HanHua %TOOLVER%
+goto :BANNER_DONE
+:BANNER_PLAIN
+echo    Antigravity YiJian HanHua
+:BANNER_DONE
 echo  ==============================================================
 echo.
 
