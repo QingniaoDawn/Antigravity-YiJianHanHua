@@ -1,6 +1,9 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+.venv/
+venv/
 
 # 系统与编辑器
 .DS_Store
@@ -10,3 +13,36 @@ Thumbs.db
 
 # 本地错误日志（内含环境变量片段，不进仓库）
 hanhua_error_log.txt
+*.log
+
+# ============================================
+# 凭证与密钥：任何情况下都不得入库
+# ============================================
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+id_rsa
+id_dsa
+id_ed25519
+credentials.json
+.netrc
+.npmrc
+.pypirc
+.htpasswd
+token.txt
+*.token
+
+# 本地数据与备份
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+backup.zip
+*.tmp
+
+# 构建产物（发布包由打包脚本单独产出，不入库）
+*.zip

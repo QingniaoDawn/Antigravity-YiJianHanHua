@@ -1,6 +1,6 @@
 # Antigravity 一键汉化 · Linux 版说明
 
-Linux 版与 Windows / macOS 版共用同一套 `localize.py`、`engine.js` 与 `zh_data.json`（20871 翻译单元）。
+Linux 版与 Windows / macOS 版共用同一套 `localize.py`、`engine.js` 与 `zh_data.json`（21014 翻译单元）。
 
 > **验证范围（如实说明）**：
 > Linux 分支由社区贡献（[PR #1](https://github.com/QingniaoDawn/Antigravity-YiJianHanHua/pull/1)），
