@@ -67,6 +67,10 @@ chmod +x ./一键汉化.sh
 4. **系统级安装目录（`/opt`、`/usr/lib`）自动提权**：
    - 若 Antigravity 安装在普通用户无写权限的系统目录，脚本会先在临时目录完成解包、注入、语法门禁与打包复检，最后仅在落盘备份与原子替换一步自动调用 `sudo` 或 `pkexec` 提权。
 
+5. **对话标题与章节标题自动中文生成（`language_server` 等长提示词补丁）**：
+   - Antigravity 左侧会话列表的自动命名由后台 `resources/bin/language_server` 进程调用云端模型总结，其内部提示词不读取 `~/.gemini/config/rules/` 规则，且写死了英文输出（`3-5 words, title-cased`），导致中文提问也会生成英文标题。
+   - 汉化脚本会对 `language_server` 中的对话标题与章节标题系统提示词执行**严格等字节长度替换**（214B → 214B、238B → 238B，不改变二进制任何偏移量，零运行时开销），并自动维护 `language_server.bak` 原版备份（还原时一并恢复）。
+
 ---
 
 ## 已知限制
