@@ -175,7 +175,7 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.21.0"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TOOL_VERSION = "v1.21.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
 TESTED_VERSION = "2.35.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2 / 2.33.0；2.34.0 离线全量验证 + 运行态抽查 + 真机汉化/还原循环 + 对话标题中文实测；2.35.0 离线全量验证 + 隔离副本端到端（注入 / 重打包 / 还原）+ 词典覆盖率审计，尚未做真机 GUI 验证）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
@@ -3650,6 +3650,130 @@ def _report_failures(report):
         print("\n[!] 有锚点未命中，请查看上方明细")
 
 
+# ---------------- 插件界面（sidecar）汉化 ----------------
+# 为什么单独处理：内置插件（如「智能体集群」）的界面是一个独立的 sidecar 应用，
+# 通过 plugin:// 协议在跨源 iframe 里加载。它是另一个源，主 preload 的 DOM 引擎
+# 访问不到它的文档，所以只能直接改插件自己的 HTML/JS 文案。
+# 影响范围：仅 ~/.gemini/antigravity/builtin/plugins 下的界面文件；
+# 每个文件首次修改前会留一份 .agyzhbak 备份，「恢复官方原版」时自动还原。
+# 官方更新插件会覆盖这些文件（文案变回英文），重跑一次汉化即可恢复。
+PLUGIN_UI_SUFFIX = ".agyzhbak"
+
+
+def plugin_asset_roots():
+    """返回存在的插件资源根目录（去重、绝对路径）"""
+    cands = []
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        cands.append(os.path.join(home, ".gemini", "antigravity", "builtin", "plugins"))
+    up = os.environ.get("USERPROFILE")
+    if up:
+        cands.append(os.path.join(up, ".gemini", "antigravity", "builtin", "plugins"))
+    if IS_MAC or IS_LINUX:
+        cands.append(os.path.expanduser("~/.gemini/antigravity/builtin/plugins"))
+    out = []
+    for c in cands:
+        try:
+            c = os.path.abspath(os.path.expandvars(c))
+        except Exception:
+            continue
+        if os.path.isdir(c) and c not in out:
+            out.append(c)
+    return out
+
+
+def patch_plugin_ui(data, report, roots=None):
+    """把内置插件 sidecar 的界面文案改成中文（幂等，失败不影响主流程）"""
+    patches = (data or {}).get("pluginPatches") or {}
+    if not patches:
+        return 0
+    roots = roots if roots is not None else plugin_asset_roots()
+    if not roots:
+        report.append(("跳过", "插件界面文案（未找到 ~/.gemini/antigravity/builtin/plugins）", True))
+        return 0
+
+    changed_files, total_hits, failed = 0, 0, 0
+    for root in roots:
+        for rel, rows in patches.items():
+            path = os.path.join(root, rel.replace("/", os.sep))
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = f.read()
+            except OSError:
+                continue
+            out, hits = raw, 0
+            for row in rows:
+                find, repl, kind = row.get("f"), row.get("r"), row.get("t")
+                if not find or repl is None:
+                    continue
+                if kind == "js":
+                    if find in out:
+                        hits += out.count(find)
+                        out = out.replace(find, repl)
+                else:  # html：匹配 >文案<，容忍标签间的缩进与换行
+                    pat = re.compile(r"(?<=>)" + re.escape(find) + r"(?=\s*<)")
+                    out, n = pat.subn(repl, out)
+                    hits += n
+            if out == raw:
+                continue
+            bak = path + PLUGIN_UI_SUFFIX
+            if not os.path.exists(bak):
+                try:
+                    shutil.copy2(path, bak)
+                except OSError as e:
+                    failed += 1
+                    report.append(("跳过", f"插件界面文案（备份失败：{os.path.basename(path)}：{e}）", False))
+                    continue
+            try:
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    f.write(out)
+            except OSError as e:
+                failed += 1
+                report.append(("跳过", f"插件界面文案（写入失败：{os.path.basename(path)}：{e}）", False))
+                continue
+            changed_files += 1
+            total_hits += hits
+
+    if changed_files:
+        report.append(("替换", f"插件界面文案：{changed_files} 个文件 / {total_hits} 处", True))
+    elif failed == 0:
+        report.append(("替换", "插件界面文案（已是中文，或对应插件未安装）", True))
+    return changed_files
+
+
+def restore_plugin_ui(report, roots=None):
+    """从 .agyzhbak 还原插件界面文件，并删除备份"""
+    roots = roots if roots is not None else plugin_asset_roots()
+    restored = 0
+    for root in roots:
+        for dp, _, fs in os.walk(root):
+            for f in fs:
+                if not f.endswith(PLUGIN_UI_SUFFIX):
+                    continue
+                bak = os.path.join(dp, f)
+                orig = bak[: -len(PLUGIN_UI_SUFFIX)]
+                try:
+                    shutil.copy2(bak, orig)
+                    os.remove(bak)
+                    restored += 1
+                except OSError:
+                    pass
+    if restored:
+        report.append(("还原", f"插件界面文案：{restored} 个文件", True))
+    return restored
+
+
+def plugin_ui_state():
+    """返回已汉化的插件界面文件数（以 .agyzhbak 备份数为准）"""
+    n = 0
+    for root in plugin_asset_roots():
+        for dp, _, fs in os.walk(root):
+            n += sum(1 for f in fs if f.endswith(PLUGIN_UI_SUFFIX))
+    return n
+
+
 def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     asar = os.path.join(resources, "app.asar")
     if not os.path.isfile(asar):
@@ -3924,6 +4048,13 @@ def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     except Exception as e:
         report.append(("跳过",
                        f"language_server 标题提示词（意外错误：{type(e).__name__}: {e}）", False))
+    # 8a-3. 内置插件 sidecar 的界面文案（跨源 iframe，DOM 引擎覆盖不到，只能改它自己的文件）
+    # 同样放在最后并整体兜底：插件没装、目录不存在、文件被占用，都只是「这部分保持英文」。
+    try:
+        patch_plugin_ui(data, report)
+    except Exception as e:
+        report.append(("跳过",
+                       f"插件界面文案（意外错误：{type(e).__name__}: {e}）", False))
     # unpacked 目录：内容与官方完全一致（我们只改 dist/），无需变动；
     # 打包产生的临时 unpacked 目录清理掉
     cleanup_temp(resources, work)
@@ -4006,6 +4137,14 @@ def cmd_restore(resources, auto_yes=False, no_kill=False):
     print("=" * 62)
     print("  恢复官方英文原版")
     print("=" * 62)
+    # 插件界面文案与 asar 状态无关：放在最前面还原，
+    # 否则「选择 2 恢复原版」之后插件面板仍是中文，形成错配。
+    try:
+        n_plugin = restore_plugin_ui([])
+        if n_plugin:
+            log(f"插件界面文案：已还原 {n_plugin} 个文件", ok=True)
+    except Exception as e:
+        log(f"插件界面文案还原失败（不影响主界面）：{type(e).__name__}: {e}", warn=True)
     # 关键：当前 asar 已是官方英文时必须直接返回。
     # 否则会拿旧备份覆盖新版本 —— 例如用户汉化过 2.31.2、官方自动升级到 2.33.0 后
     # 再点「恢复原版」，旧备份会把 2.31.2 的 asar 塞进 2.33.0 的安装目录，
@@ -4107,6 +4246,17 @@ def cmd_status(resources):
                     ok=not bad)
             except OSError:
                 log(f"标题提示词备份：存在（{'警告：已被污染' if bad else '正常'}）", ok=not bad)
+    # 插件界面文案状态（内置插件的 sidecar 是跨源 iframe，走静态文案替换）
+    try:
+        n_plugin = plugin_ui_state()
+        if n_plugin:
+            log(f"插件界面文案：已汉化（{n_plugin} 个文件）", ok=True)
+        elif plugin_asset_roots():
+            log("插件界面文案：官方英文（重新运行汉化即可启用）", warn=True)
+        else:
+            log("插件界面文案：未检测到内置插件目录（跳过）")
+    except Exception:
+        pass
     # macOS 追加：签名健康度（这是 Mac 上最常见的故障点）
     mac_status_extra(resources)
 
