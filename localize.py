@@ -252,8 +252,43 @@ def log(msg, ok=False, warn=False):
 FAIL_LOG_NAME = "hanhua_error_log.txt"
 
 
+def _scrub_identity(text):
+    """把日志里的用户名换成占位符。
+
+    失败日志是要给作者看的，用户会连同整段贴到 Issue 里。
+    里面原本带着 C:\\Users\\<真实用户名>，等于替用户公开了身份与本机路径结构。
+    """
+    if not text:
+        return text
+    try:
+        text = re.sub(r"([A-Za-z]:\\+[Uu]sers\\+)([^\\/:*?\"<>|\s]+)", r"\1<用户>", text)
+        text = re.sub(r"(/Users/)([^/\s]+)", r"\1<用户>", text)
+        text = re.sub(r"(/home/)([^/\s]+)", r"\1<用户>", text)
+    except Exception:
+        pass
+    return text
+
+
+def _summarize_path(val):
+    """PATH 只保留 Python / Node 相关条目，其余计数。
+
+    完整 PATH 会暴露用户装了哪些软件（VMware、各家 IDE、内部工具……），
+    对排障真正有用的只有 python/node 在哪。
+    """
+    try:
+        items = [x for x in val.split(os.pathsep) if x.strip()]
+        keep = [x for x in items if re.search(r"python|node", x, re.I)]
+        dropped = len(items) - len(keep)
+        s = os.pathsep.join(_scrub_identity(x) for x in keep[:8])
+        if dropped > 0:
+            s = (s + "  " if s else "") + f"<另有 {dropped} 个无关条目已省略>"
+        return s or "(空)"
+    except Exception:
+        return "(无法解析)"
+
+
 def _collect_env_snapshot():
-    """收集一份最小但够用的环境快照。用户描述不清时，全靠这份东西定位。"""
+    """收集一份最小但够用的环境快照。已做身份脱敏，可放心分享。"""
     import platform
     lines = []
     try:
@@ -261,12 +296,12 @@ def _collect_env_snapshot():
         lines.append(f"工具版本  : {TOOL_VERSION}")
         lines.append(f"系统      : {platform.platform()}")
         lines.append(f"架构      : {platform.machine()} / Python {platform.python_version()}")
-        lines.append(f"解释器    : {sys.executable}")
+        lines.append(f"解释器    : {_scrub_identity(sys.executable)}")
         lines.append(f"输出编码  : {getattr(sys.stdout, 'encoding', '?')}")
-        lines.append(f"工作目录  : {os.getcwd()}")
-        lines.append(f"脚本目录  : {SCRIPT_DIR}")
+        lines.append(f"工作目录  : {_scrub_identity(os.getcwd())}")
+        lines.append(f"脚本目录  : {_scrub_identity(SCRIPT_DIR)}")
         lines.append(f"Node探测  : {NODE_INFO}")
-        lines.append(f"Python路径: {os.environ.get('PATH', '')[:600]}")
+        lines.append(f"Python路径: {_summarize_path(os.environ.get('PATH', ''))}")
     except Exception as e:
         lines.append(f"(环境快照收集失败: {e})")
     return lines
@@ -277,7 +312,8 @@ def _write_fail_log(msg):
     try:
         body = ["=== Antigravity 一键汉化 · 失败记录 ===", ""]
         body += _collect_env_snapshot()
-        body += ["", "--- 错误信息 ---", str(msg), ""]
+        body += ["", "--- 错误信息 ---", _scrub_identity(str(msg)), "",
+                 "（本日志已隐藏用户名与无关路径，可放心发送给作者）", ""]
         text = "\n".join(body)
         for d in (SCRIPT_DIR, tempfile.gettempdir()):
             try:
