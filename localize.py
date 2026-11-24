@@ -12,6 +12,8 @@ Antigravity 一键汉化 __VERSION__（Windows / macOS / Linux 三平台）
   可选：--path <安装目录>  --yes（免确认）  --no-kill（仅 Linux：不关进程直接热替换）
 
 流程：杀进程 → 备份 → 解包 → 注入 → 语法门禁 → 打包 → 部署后复检 → 原子替换
+      → 对话标题中文化（三平台：等字节替换 resources/bin/language_server
+        里两段英文提示词，让会话名与章节标题直接生成中文；macOS 签完再验签）
       →（macOS 追加）代码签名重签 → 启动
 安全：汉化 / 还原 / 状态 / AI 中文化全程仅本地操作，无任何网络行为；唯一例外是
       「检查更新」，只有你主动点它才会连一次 GitHub（只查版本号，不自动替换）。
@@ -173,8 +175,8 @@ TRAY_END = "// ===== [AGY_ZH_TRAY_END] ====="
 CTX_START = "// ===== [AGY_ZH_CTXMENU_START] 原生右键菜单翻译 ====="
 CTX_END = "// ===== [AGY_ZH_CTXMENU_END] ====="
 
-TOOL_VERSION = "v1.19.1"               # 工具版本号（唯一数据源，改这里即可全局生效）
-TESTED_VERSION = "2.34.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2 / 2.33.0；2.34.0 为离线全量验证 + 运行态抽查）
+TOOL_VERSION = "v1.20.0"               # 工具版本号（唯一数据源，改这里即可全局生效）
+TESTED_VERSION = "2.34.0"          # 深度适配验证过的版本（Windows 真机实测：2.21.1 / 2.23.1 / 2.24.0 / 2.25.0 / 2.27.0 / 2.28.1 / 2.28.2 / 2.31.0 / 2.31.2 / 2.33.0；2.34.0 已做离线全量验证 + 运行态抽查 + 真机汉化/还原循环 + 对话标题中文实测）
 EXIT_CANCELLED = 130                # 用户主动中断（Ctrl+C / 输入流断开）。批处理据此区分"取消"和"出错"
 MARKER_CHECK = b"AGY_ZH_ENGINE_START"   # 用于字节级判断 asar 是否已被汉化
 NODE_OK = False                     # check_env() 探测结果：node 不仅存在，而且实测能跑起来
@@ -831,18 +833,6 @@ def _js_sort_key(s):
     """
     raw = s.encode("utf-16-be", "surrogatepass")
     return tuple(int.from_bytes(raw[i:i + 2], "big") for i in range(0, len(raw), 2))
-
-
-def _sha256_file(path):
-    import hashlib
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(1024 * 1024)
-            if not b:
-                break
-            h.update(b)
-    return h.hexdigest()
 
 
 def asar_file_integrity(path):
@@ -2039,6 +2029,25 @@ def _mac_nested_code_items(app_bundle):
                     items.append(p)
         except OSError:
             pass
+    # Contents/Resources/bin/ 下的可执行文件（language_server 就在这里）
+    #
+    # 和上面 framework 的 Resources 是同一个坑：codesign 只把 Frameworks / PlugIns /
+    # XPCServices / Helpers 这些固定位置当「嵌套代码」递归处理，Resources 里的 Mach-O
+    # 只被记一条资源哈希，**不会被重签**。
+    #
+    # 但 language_server 自带 LC_CODE_SIGNATURE（v2.35.0 实测 403,536 字节）。
+    # 汉化会等字节替换它里面的两段提示词，内容一变，签名里的 CDHash 就对不上，
+    # 内核会直接拒绝执行这个子进程（表现为会话、补全全挂）。所以必须单独签。
+    rbin = os.path.join(app_bundle, "Contents", "Resources", "bin")
+    if os.path.isdir(rbin):
+        try:
+            for name in sorted(os.listdir(rbin)):
+                p = os.path.join(rbin, name)
+                if _mac_is_macho(p):
+                    items.append(p)
+        except OSError:
+            pass
+
     # 深度优先：层级更深（内层）的先签，保证"由内到外"
     items = sorted(set(items), key=lambda x: (-x.count(os.sep), x))
     return items
@@ -2518,6 +2527,19 @@ if [ -d "$APP/Contents/Frameworks" ]; then
   done
 fi
 
+# Contents/Resources/bin 下的可执行文件（language_server 就在这里）。
+# 和上面 framework 的 Resources 是同一个坑：codesign 不把它当嵌套代码，
+# 主包重签只更新它的资源哈希、**不会重签它本身**。汉化会等字节替换它里面的
+# 两段提示词，如果它自身签名失效，--deep 校验会一直失败，修复永远不成功。
+# 所以这里一并补签，覆盖范围与 localize.py 的 _mac_nested_code_items 保持一致。
+if [ -d "$APP/Contents/Resources/bin" ]; then
+  while IFS= read -r -d '' bin; do
+    case "$(file -b "$bin" 2>/dev/null)" in
+      *Mach-O*) codesign --force --sign - "$bin" 2>/dev/null || FAIL=$((FAIL+1)) ;;
+    esac
+  done < <(find -H "$APP/Contents/Resources/bin" -type f -perm -111 -print0 2>/dev/null)
+fi
+
 # 主包：优先写入「只锚定 bundle id」的签名身份，让官方应用内更新不被拒绝；
 # 写入失败则回退普通重签（App 能打开优先于能更新）
 BID="$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null)"
@@ -2885,9 +2907,9 @@ def patch_all(extract_dir, engine_code, data, report):
             c = c.replace(find_orig, find_hooked)
             report.append(("替换", "menu.js 子菜单双语查找兼容", True))
         elif find_hooked in c:
-            report.append(("已生效", "menu.js 子菜单双语查找", True))
+            report.append(("已生效", "menu.js 子菜单双语查找兼容", True))
         else:
-            report.append(("未命中", "menu.js 子菜单双语查找", False))
+            report.append(("未命中", "menu.js 子菜单双语查找兼容", False))
         # 更新菜单项点击：翻译后 label 变中文，updateActions 查不到 → 回退原始 label
         upd_hooked, upd_orig = menu_hook_pairs()[3]
         if upd_orig in c:
@@ -3076,6 +3098,516 @@ def ensure_backup(asar_path):
     return bak, True
 
 
+# ----------------------------------------------------------------------------
+# language_server 对话标题 / 章节标题提示词汉化（严格等字节长度替换）
+# ----------------------------------------------------------------------------
+# 背景：
+#   Antigravity 左侧会话列表的「对话名称」和长对话的「章节标题」由后台
+#   resources/bin/language_server（Go 程序）调用云端模型总结生成。这个内部请求用的是
+#   自己硬编码的系统提示词，不加载 ~/.gemini/config/rules/ 下的用户规则，而且原文把
+#   英文输出写死在里面：
+#     对话标题 "Respond with ONLY a short conversation title (3-5 words, title-cased, no prefix)"
+#     章节标题 "Reply with only a plain 3 to 6 word title in sentence case, ..."
+#   所以用户全程用中文提问，生成出来的标题照样是英文 Title Case。
+#
+# 解法：
+#   对这两段提示词做**字节数严格相等**的替换，改成要求输出简体中文标题。
+#   为什么必须等长：Go 二进制里字符串的「数据指针 + 长度」固定在 .rdata 与代码段，
+#   只要替换前后字节数一致，段偏移、符号表、长度立即数就全部保持原样，零运行时开销，
+#   也不会移动 PE 段表与任何后续字节。
+#   实测基准（Windows v2.34.0 language_server.exe，207,245,312 字节）：替换后文件大小
+#   不变、段表不变、--help 与 --stamp 输出逐字节一致。该二进制**本身没有 Authenticode
+#   签名**（PE 安全目录 size=0），所以不存在「改完签名失效」的问题；官方哪天给它签名了，
+#   这个补丁需要重新评估，不能照搬。
+#   Linux 版由社区贡献者报告替换前后文件大小与权限位一致；本维护者未在 Linux 真机复测。
+#
+# 平台边界：
+#   Windows / Linux 直接生效。macOS 也能改，但必须额外处理签名：
+#   language_server 在 .app 包内属于嵌套二进制，自带 LC_CODE_SIGNATURE（约 400 KB），
+#   内容一改签名即失效、内核会拒绝执行，所以改完要立刻 codesign 重签并验签，
+#   签不上就自动回滚。这一步已写进 _mac_nested_code_items + patch_language_server，
+#   但整条链路尚未在 Mac 真机上跑过（见 mac/README.md）。
+#
+# 安全底线：
+#   备份没做成（磁盘不足 / 权限不足 / 复制失败）就**放弃打补丁**。宁可标题保持英文，
+#   也绝不出现「改了却还原不回去」的状态。
+LS_TITLE_PATCHES = [
+    (
+        "对话标题提示词",
+        b"Respond with ONLY a short conversation title (3-5 words, title-cased, no prefix) "
+        b"describing the USER's intent. Keep abbreviations and acronyms from the USER's "
+        b"request as-is rather than guessing what they stand for.",
+        "Respond with ONLY a short conversation title in Simplified Chinese "
+        "(简体中文, 4-12字, 无前缀) describing the USER's intent. Keep abbreviations "
+        "and acronyms from the USER's request as-is; do not expand them.".encode("utf-8"),
+    ),
+    (
+        "章节标题提示词",
+        b"Reply with only a plain 3 to 6 word title in sentence case, with no quotes or "
+        b"trailing period, naming what the USER worked on; use the replies only as context. "
+        b"For example: Fixing the login redirect bug, or Planning the websocket rollout.",
+        "Reply with only a plain Simplified Chinese title (简体中文, 4-14 characters), "
+        "with no quotes or trailing period, naming what the USER worked on; use the replies "
+        "only as context. E.g. 修复登录重定向问题, 或规划部署方案.".encode("utf-8"),
+    ),
+]
+
+LS_BAK_SUFFIX = ".bak"
+
+
+def find_language_server(resources_dir):
+    """定位 resources/bin 下的 language_server 二进制（不存在返回 None）。
+
+    符号链接一律跳过，不返回。原因有两条，都是实测确认的：
+      1. `os.replace(tmp, link)` 替换的是**链接本身**，不是它指向的真实文件——
+         结果真实文件一个字节没改，链接却被一个普通文件顶替，等于凭空多出来
+         一个孤儿文件，用户还原时分不清谁是谁；
+      2. macOS 的签名扫描（`_mac_is_macho`）本来就会跳过符号链接，真改到目标
+         也会因为没重签而被内核拒绝执行。
+    官方安装里这两个文件都是实体文件；真遇到链接属于非常规结构，
+    交给 `patch_language_server` 明确报告，而不是硬改。
+    """
+    bin_dir = os.path.join(resources_dir, "bin")
+    if not os.path.isdir(bin_dir):
+        return None
+    for name in ("language_server", "language_server.exe"):
+        p = os.path.join(bin_dir, name)
+        if os.path.islink(p):
+            continue
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def ls_patch_hits(raw):
+    """逐条判定补丁状态，返回 [(label, state, orig_len)]，state ∈ {patched, orig, missing}。
+    先判 rep 再判 orig：打完补丁后原文已不存在，顺序反了会把已生效误判成未处理。"""
+    out = []
+    for label, orig_b, rep_b in LS_TITLE_PATCHES:
+        if rep_b in raw:
+            out.append((label, "patched", len(orig_b)))
+        elif orig_b in raw:
+            out.append((label, "orig", len(orig_b)))
+        else:
+            out.append((label, "missing", len(orig_b)))
+    return out
+
+
+def _ls_brief_err(e):
+    """把文件操作异常压成一句用户能看懂的话。
+
+    直接 str(e) 会把整条绝对路径塞进报告（Windows 上尤其长，
+    一个 WinError 就能占满两行终端），对用户判断问题毫无帮助。"""
+    if isinstance(e, PermissionError):
+        return "拒绝访问（文件被占用，或被设成了只读）"
+    import errno as _errno
+    if getattr(e, "errno", None) == _errno.ENOSPC:
+        return "磁盘空间不足"
+    s = str(e)
+    return (s[:100] + "…") if len(s) > 100 else s
+
+
+def _ls_scan(path):
+    """分块扫描 language_server：返回 (是否已含中文补丁文本, sha256 十六进制)。
+
+    为什么分块：这个文件 188~207 MB，只为判个状态就整个读进内存太浪费
+    （`status` 一次要判两个文件，原来会占掉 400 MB）。补丁文本可能正好
+    跨 1 MB 块边界，所以用 tail 保留上一块末尾做重叠窗口，不会漏检。
+    """
+    h = hashlib.sha256()
+    patched = False
+    maxpat = max(len(r) for _, _, r in LS_TITLE_PATCHES)
+    tail = b""
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+            if not patched:
+                window = tail + chunk
+                if any(rep in window for _, _, rep in LS_TITLE_PATCHES):
+                    patched = True
+                tail = window[-maxpat:]
+    return patched, h.hexdigest()
+
+
+def ls_is_localized(ls_path):
+    """二进制里是否已经含中文标题提示词（任一条命中即视为已打补丁）。
+    用于 cmd_status 展示与 restore 前的必要性判断，不用于完整性验收。
+    分块扫描，不把整个文件读进内存。"""
+    if not ls_path or not os.path.isfile(ls_path):
+        return False
+    try:
+        return _ls_scan(ls_path)[0]
+    except OSError:
+        return False
+
+
+def _ls_backup_usable(bak, cur_sha):
+    """已有备份能否直接复用：内容与当前官方文件完全一致、且自身没被补丁污染。
+
+    **只比尺寸不够**——官方换版时二进制大小可能碰巧相同（asar 那边就吃过
+    这个亏）。复用旧备份会在 restore 时把旧版塞进新版安装，造成版本错配、
+    应用直接起不来。这里比哈希；当前文件的哈希由调用方顺带算出，
+    所以只需要多读备份这一个文件。"""
+    try:
+        if not os.path.isfile(bak):
+            return False
+    except OSError:
+        return False
+    try:
+        bak_patched, bak_sha = _ls_scan(bak)
+    except OSError:
+        return False
+    return (not bak_patched) and bak_sha == cur_sha
+
+
+def _ls_make_backup(ls_path, bak, work_dir):
+    """原子地写官方原版备份。返回 True 才算备份成功——失败时调用方必须放弃打补丁。
+
+    要处理两种真实情况，缺一种就会在系统目录下彻底失败：
+      1. 目标目录不可写（macOS 的 /Applications、Linux 的 /opt）→ 按平台提权；
+      2. 临时文件落在别的卷（work_dir 通常是 /var/folders 或 /tmp）→ 先就地复制再 rename。
+    注意不能只 catch PermissionError：EXDEV 是普通 OSError（errno 18），
+    会被 `except OSError` 直接吞掉，连提权机会都没有。
+    """
+    bin_dir = os.path.dirname(ls_path)
+    tmp_dir = bin_dir if os.access(bin_dir, os.W_OK) else work_dir
+    tmp = os.path.join(tmp_dir, f"language_server.agyzh.bak.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(ls_path, tmp)
+        for attempt in range(4):
+            try:
+                os.replace(tmp, bak)
+                return True
+            except OSError as e:
+                import errno as _errno
+                crossed_volume = getattr(e, "errno", None) == _errno.EXDEV
+                if isinstance(e, PermissionError) or crossed_volume:
+                    if IS_LINUX and _linux_replace_with_admin(tmp, bak):
+                        return True
+                    if IS_MAC and _mac_replace_with_admin(tmp, bak):
+                        return True
+                    if not IS_WIN:
+                        return False      # Linux/macOS 提权失败就别反复弹密码框了
+                    # Windows 没有提权这条路：文件可能只是被 Defender 短暂占用，继续重试
+                if attempt >= 3:
+                    return False
+                time.sleep(0.2)
+        return False
+    except OSError:
+        return False
+    finally:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _ls_rollback(ls_path, bak):
+    """把官方备份写回目标位置。签名失败 / 被 Ctrl+C 打断时的最后一道保险。
+    返回 True 表示回滚成功。"""
+    try:
+        shutil.copy2(bak, ls_path)
+        return True
+    except OSError:
+        if IS_MAC:
+            return _mac_replace_with_admin(bak, ls_path)
+        return False
+
+
+def patch_language_server(resources_dir, work_dir, report):
+    """把 language_server 里两条标题提示词换成简体中文版（等字节长度，零偏移变化）。
+
+    report 沿用主流程的三元组格式 (kind, label, ok)。
+
+    macOS：这个二进制自带 LC_CODE_SIGNATURE，改完签名立即失效，内核会拒绝执行
+    （表现为会话与补全全挂）。所以这里改完必须马上重签并当场验证，签不上就回滚。
+    codesign 都找不到的环境直接跳过——宁可标题是英文，也不能让语言服务器起不来。
+
+    任何一步不满足安全条件都只跳过，绝不影响界面汉化主流程。"""
+    if IS_MAC and not _codesign_available():
+        report.append(("跳过",
+                       "language_server 标题提示词（未找到 codesign，无法重签，标题保持英文）",
+                       False))
+        return
+    ls_path = find_language_server(resources_dir)
+    if not ls_path:
+        # 区分「根本没有这个文件」和「它是符号链接」：后者必须告诉用户，
+        # 否则用户会以为工具漏做了，实际是我们主动不碰。
+        bin_dir = os.path.join(resources_dir, "bin")
+        for _name in ("language_server", "language_server.exe"):
+            _cand = os.path.join(bin_dir, _name)
+            if os.path.islink(_cand):
+                try:
+                    _target = os.path.realpath(_cand)
+                except OSError:
+                    _target = "?"
+                report.append(("跳过",
+                               f"language_server 是符号链接（→ {_target}），"
+                               "替换会打断链接且真实文件不会被改到，已跳过，标题保持英文",
+                               False))
+                return
+        return
+
+    try:
+        with open(ls_path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        report.append(("跳过", f"language_server 标题提示词（读取失败：{_ls_brief_err(e)}）", False))
+        return
+
+    # 防御性自检：常量长度不等就不要动文件，任何变长替换都会移动后续所有字节
+    if any(len(o) != len(r) for _, o, r in LS_TITLE_PATCHES):
+        report.append(("跳过", "language_server 标题提示词（补丁常量长度不一致，安全跳过）", False))
+        return
+
+    hits = ls_patch_hits(raw)
+    todo = [(lab, o, r) for (lab, o, r), (_, st, _) in zip(LS_TITLE_PATCHES, hits) if st == "orig"]
+    already = [h for h in hits if h[1] == "patched"]
+    missing = [h[0] for h in hits if h[1] == "missing"]
+
+    if not todo:
+        if already:
+            # 已经是中文版了。但用户可能手动删过 .bak——那样就还原不回去，必须说清楚，
+            # 否则「查看状态」看着正常、真要还原时才发现没备份。
+            bak = ls_path + LS_BAK_SUFFIX
+            if os.path.isfile(bak) and not ls_is_localized(bak):
+                report.append(("已生效", "language_server 对话/章节标题中文提示词", True))
+            else:
+                report.append(("已生效",
+                               "language_server 对话/章节标题中文提示词（注意：原版备份缺失或已损坏，"
+                               "这一项无法一键还原）", False))
+        else:
+            report.append(("未命中", "language_server 标题提示词（官方文案已变动，标题将保持英文）", False))
+        return
+
+    # 磁盘空间预检
+    # 算两笔账：备份要占一整份，随后写临时文件还要再来一份（跨卷时会先在 bin 目录
+    # 落一个 local_tmp）。只按一份算的话，空间刚好卡线时会先白扔 197 MB 备份再失败。
+    bak = ls_path + LS_BAK_SUFFIX
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    need_backup = not _ls_backup_usable(bak, raw_sha)
+    need_bytes = len(raw) * (2 if need_backup else 1) + 32 * 1024 * 1024
+    try:
+        free = shutil.disk_usage(os.path.dirname(ls_path)).free
+    except OSError:
+        free = None
+    if free is not None and free < need_bytes:
+        report.append(("跳过",
+                       f"language_server 标题提示词（磁盘剩余 {free // 1048576} MB，"
+                       f"不足本次所需的约 {need_bytes // 1048576} MB，标题保持英文）", False))
+        return
+    if need_backup and not _ls_make_backup(ls_path, bak, work_dir):
+        report.append(("跳过",
+                       "language_server 标题提示词（原版备份创建失败，"
+                       "为保留还原能力已跳过，标题保持英文）", False))
+        return
+
+    orig_len = len(raw)
+    new_raw = raw
+    applied = []
+    for label, orig_b, rep_b in todo:
+        if orig_b in new_raw:
+            new_raw = new_raw.replace(orig_b, rep_b, 1)
+            applied.append((label, rep_b))
+    if not applied:
+        return
+    if len(new_raw) != orig_len:
+        report.append(("跳过", "language_server 标题提示词（替换后长度异常，已放弃）", False))
+        return
+
+    # 落盘：沿用原文件权限位；跨分区或权限不足时按平台兜底
+    try:
+        st_mode = os.stat(ls_path).st_mode & 0o7777
+    except OSError:
+        st_mode = 0o755
+    bin_dir = os.path.dirname(ls_path)
+    temp_dir = bin_dir if os.access(bin_dir, os.W_OK) else work_dir
+    temp_ls = os.path.join(temp_dir, f"language_server.agyzh.{os.getpid()}.tmp")
+    deployed = False
+    last_err = ""
+    try:
+        with open(temp_ls, "wb") as f:
+            f.write(new_raw)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        try:
+            os.chmod(temp_ls, st_mode)
+        except OSError:
+            pass
+        for attempt in range(6):
+            try:
+                os.replace(temp_ls, ls_path)
+                deployed = True
+                break
+            except OSError as e:
+                last_err = _ls_brief_err(e)
+                import errno as _errno
+                crossed_volume = getattr(e, "errno", None) == _errno.EXDEV
+
+                # 跨卷：临时文件先就地复制到目标目录，再在同卷内 rename
+                if crossed_volume:
+                    local_tmp = os.path.join(bin_dir, f"language_server.agyzh.{os.getpid()}.tmp")
+                    try:
+                        shutil.copy2(temp_ls, local_tmp)
+                        try:
+                            os.chmod(local_tmp, st_mode)
+                        except OSError:
+                            pass
+                        os.replace(local_tmp, ls_path)
+                        deployed = True
+                        break
+                    except OSError as e2:
+                        last_err = _ls_brief_err(e2)
+                        try:
+                            if os.path.isfile(local_tmp):
+                                os.remove(local_tmp)
+                        except OSError:
+                            pass
+
+                # 权限不足或跨卷都提权兜底：Linux 走 sudo/pkexec，macOS 走 osascript 授权
+                if isinstance(e, PermissionError) or crossed_volume:
+                    if IS_LINUX and _linux_replace_with_admin(temp_ls, ls_path):
+                        deployed = True
+                        break
+                    if IS_MAC and _mac_replace_with_admin(temp_ls, ls_path):
+                        deployed = True
+                        break
+                    if not IS_WIN:
+                        break          # Linux/macOS 提权失败，重试只会反复弹密码框
+                    # Windows 没有提权路径：保持原有重试，等 Defender / 索引释放句柄
+                if attempt < 5:
+                    time.sleep(0.25)
+    except OSError as e:
+        last_err = _ls_brief_err(e)
+    finally:
+        try:
+            if os.path.isfile(temp_ls):
+                os.remove(temp_ls)
+        except OSError:
+            pass
+
+    # macOS：改完必须立刻重签这个二进制并当场验证。
+    # 签名失效的 Mach-O 会被内核直接拒绝执行，语言服务器起不来 = 会话和补全全挂，
+    # 比标题显示英文严重得多。所以签不上就无条件回滚，不留中间态。
+    if deployed and IS_MAC:
+        need_admin = not os.access(bin_dir, os.W_OK)
+        try:
+            ok_sign, sign_err = _mac_sign_once(ls_path, "-", None, sudo=need_admin)
+            if not ok_sign and not need_admin:
+                ok_sign, sign_err = _mac_sign_once(ls_path, "-", None, sudo=True)
+        except BaseException:
+            # 被 Ctrl+C（或任何中断）打断时，文件已经是补丁态、却还没签上名。
+            # macOS 内核对签名不符的 Mach-O 直接拒绝执行，语言服务器就再也起不来。
+            # 先无条件回滚，再把中断原样抛出去，绝不留下这个中间态。
+            log("签名被中断，正在回滚 language_server 以免其无法执行…", warn=True)
+            if not _ls_rollback(ls_path, bak):
+                log("回滚失败。请用菜单 2 重新还原，或重装 Antigravity 恢复语言服务器。", warn=True)
+            raise
+        if not ok_sign:
+            log(f"language_server 重签失败（{sign_err}），正在回滚以免拖垮语言服务器…", warn=True)
+            rollback_ok = _ls_rollback(ls_path, bak)
+            deployed = False
+            last_err = ("重签失败，" + ("已回滚到官方原版" if rollback_ok
+                                      else "回滚也失败，请重装 Antigravity"))
+
+    # 落盘后读回校验：确认真写进去了，而不是「看起来成功」
+    # 先释放两份 200 MB 副本再读回，避免三个大 bytes 同时驻留内存。
+    del raw, new_raw
+    if deployed:
+        try:
+            with open(ls_path, "rb") as f:
+                check = f.read()
+            if len(check) != orig_len:
+                deployed = False
+                last_err = f"落盘后文件大小异常（{len(check)} != {orig_len}）"
+            elif not all(rep in check for _, rep in applied):
+                deployed = False
+                last_err = "落盘后读回校验未通过"
+        except OSError as e:
+            deployed = False
+            last_err = _ls_brief_err(e)
+
+    if deployed:
+        names = "、".join(lab for lab, _ in applied)
+        extra = f"；另有 {len(missing)} 条官方文案已变动未处理" if missing else ""
+        if already:
+            extra += f"；另有 {len(already)} 条此前已生效"
+        report.append(("替换",
+                       f"language_server {names}（{sum(len(o) for _, o, _ in todo)} 字节等长替换，"
+                       f"原版备份 language_server{LS_BAK_SUFFIX}{extra}）", True))
+    else:
+        report.append(("跳过",
+                       f"language_server 标题提示词（写入失败：{last_err}；标题保持英文）", False))
+
+
+def restore_language_server(resources_dir):
+    """把 language_server 还原成官方原版。返回 True 表示确实做了还原。
+    备份缺失或被污染时拒绝执行——宁可留着汉化版，也不能塞一个来路不明的二进制。"""
+    ls_path = find_language_server(resources_dir)
+    if not ls_path or not ls_is_localized(ls_path):
+        return False
+    bak = ls_path + LS_BAK_SUFFIX
+    if not os.path.isfile(bak):
+        log("未找到 language_server.bak，标题生成器保持当前状态"
+            "（重装 Antigravity 可恢复官方版本）", warn=True)
+        return False
+    if ls_is_localized(bak):
+        log("language_server.bak 已被污染（不是官方原版），拒绝还原以免损坏", warn=True)
+        return False
+
+    try:
+        st_mode = os.stat(ls_path).st_mode & 0o7777
+    except OSError:
+        st_mode = 0o755
+    bin_dir = os.path.dirname(ls_path)
+    tmp_dir = bin_dir if os.access(bin_dir, os.W_OK) else tempfile.gettempdir()
+    tmp = os.path.join(tmp_dir, f"language_server.agyzh.restore.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(bak, tmp)
+        try:
+            os.chmod(tmp, st_mode)
+        except OSError:
+            pass
+        for attempt in range(6):
+            try:
+                os.replace(tmp, ls_path)
+                log("已恢复 language_server 官方原版", ok=True)
+                return True
+            except OSError as e:
+                import errno as _errno
+                crossed_volume = getattr(e, "errno", None) == _errno.EXDEV
+                if isinstance(e, PermissionError) or crossed_volume:
+                    if IS_LINUX and _linux_replace_with_admin(tmp, ls_path):
+                        log("已通过提权恢复 language_server 官方原版", ok=True)
+                        return True
+                    if IS_MAC and _mac_replace_with_admin(tmp, ls_path):
+                        log("已通过管理员授权恢复 language_server 官方原版", ok=True)
+                        return True
+                    log(f"恢复 language_server 失败：{e}", warn=True)
+                    break
+                if attempt >= 5:
+                    log(f"恢复 language_server 失败：{e}（文件可能仍被占用，"
+                        "请完全退出 Antigravity 后重试）", warn=True)
+                    break
+                time.sleep(0.25)
+    except OSError as e:
+        log(f"恢复 language_server 失败：{e}", warn=True)
+    finally:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+    return False
+
+
 def get_asar_version(extract_dir):
     try:
         pkg = json.load(open(os.path.join(extract_dir, "package.json"), encoding='utf-8'))
@@ -3087,6 +3619,37 @@ def get_asar_version(extract_dir):
 # ----------------------------------------------------------------------------
 # 主管线
 # ----------------------------------------------------------------------------
+def _report_failures(report):
+    """打印失败项摘要（从 cmd_apply 抽出，便于单测覆盖）。
+
+    分三类，措辞绝不能混：
+      1. 界面锚点未命中 —— 官方改版导致，对应位置保持英文；
+      2. Windows 专属弹窗 —— 在 macOS / Linux 上本来就不存在，属正常现象；
+      3. 语言服务器补丁未启用 —— 附加功能，界面汉化完全不受影响。
+    第 3 类若混进第 1 类的措辞，用户会误以为整个汉化不完整。
+    """
+    fails = [r for r in report if not r[2]]
+    if not fails:
+        return
+    ls_fails = [r for r in fails if r[1].startswith("language_server")]
+    anchors = [r for r in fails if r not in ls_fails]
+    win_only = [r for r in anchors
+                if any(k in r[1] for k in ("WSL", "Windows", "windows filesystem"))]
+    real = [r for r in anchors if r not in win_only]
+    if (IS_MAC or IS_LINUX) and win_only:
+        plat_label = "Mac" if IS_MAC else "Linux"
+        print(f"\n[·] {len(win_only)} 处为 Windows 专属弹窗（WSL 等），"
+              f"{plat_label} 版本就没有这些界面，属正常现象")
+    if real:
+        print(f"[!] 有 {len(real)} 处锚点未命中（官方版本变动所致，"
+              "对应位置保持英文，不影响其他功能）")
+    if ls_fails:
+        print(f"\n[·] 对话标题中文化未启用（{len(ls_fails)} 项），"
+              "界面汉化不受影响，标题会保持英文；原因见上方对应条目。")
+    if not real and not ls_fails and not ((IS_MAC or IS_LINUX) and win_only):
+        print("\n[!] 有锚点未命中，请查看上方明细")
+
+
 def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     asar = os.path.join(resources, "app.asar")
     if not os.path.isfile(asar):
@@ -3352,6 +3915,15 @@ def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     if not replaced:
         cleanup_temp(resources, work)
         die("替换 app.asar 失败，已中止（原文件未被修改）。")
+    # 8a-2. 对话标题 / 章节标题生成提示词汉化（resources/bin/language_server 等字节替换）
+    # 放在 asar 落盘之后：主界面汉化已经生效，这一步失败也只是「标题保持英文」，
+    # 不会回滚已完成的注入。函数内部已逐项捕获，这里再兜一层——
+    # 连 MemoryError 这类意外都不该把整个流程带崩，更不能影响已经装好的界面汉化。
+    try:
+        patch_language_server(resources, work, report)
+    except Exception as e:
+        report.append(("跳过",
+                       f"language_server 标题提示词（意外错误：{type(e).__name__}: {e}）", False))
     # unpacked 目录：内容与官方完全一致（我们只改 dist/），无需变动；
     # 打包产生的临时 unpacked 目录清理掉
     cleanup_temp(resources, work)
@@ -3381,21 +3953,7 @@ def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     for kind, label, ok_ in report:
         mark = _fit_glyphs("✓") if ok_ else _fit_glyphs("△")
         print(_fit_glyphs(f"  {mark} [{kind}] {label}"))
-    fails = [r for r in report if not r[2]]
-    if fails:
-        # 区分两类未命中，避免 macOS / Linux 用户把"平台本来就没有的弹窗"误当成故障
-        win_only = [r for r in fails
-                    if any(k in r[1] for k in ("WSL", "Windows", "windows filesystem"))]
-        real = [r for r in fails if r not in win_only]
-        if (IS_MAC or IS_LINUX) and win_only:
-            plat_label = "Mac" if IS_MAC else "Linux"
-            print(f"\n[·] {len(win_only)} 处为 Windows 专属弹窗（WSL 等），"
-                  f"{plat_label} 版本就没有这些界面，属正常现象")
-        if real:
-            print(f"[!] 有 {len(real)} 处锚点未命中（官方版本变动所致，"
-                  "对应位置保持英文，不影响其他功能）")
-        if not real and not ((IS_MAC or IS_LINUX) and win_only):
-            print("\n[!] 有锚点未命中，请查看上方明细")
+    _report_failures(report)
     print("-" * 62)
 
     # 10. 启动
@@ -3410,24 +3968,35 @@ def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
 
 
 def cleanup_temp(resources, work):
-    # 清理本次 PID 的临时产物 + 任意历史残留（app.asar.agyzh.*.tmp）
-    try:
-        for name in os.listdir(resources):
-            # .tmp.part 是内置打包器的写入中间态：进程被强杀时会残留，
-            # 不认它就会在 resources 里留一个几十 MB 的垃圾文件。
-            if name.startswith("app.asar.agyzh.") and (
-                    name.endswith(".tmp") or name.endswith(".tmp.unpacked")
+    # 清理本次 PID 的临时产物 + 任意历史残留
+    #   resources/      下：app.asar.agyzh.*
+    #   resources/bin/  下：language_server.agyzh.*（打提示词补丁时的中间文件）
+    # 只认「带 agyzh 前缀 + .tmp 结尾」的名字，所以 app.asar.bak / language_server.bak
+    # 这两个正式备份不会被误删。
+    # .tmp.part 是内置打包器的写入中间态：进程被强杀时会残留，
+    # 不认它就会在 resources 里留一个几十 MB 的垃圾文件。
+    for d in (resources, os.path.join(resources, "bin")):
+        if not os.path.isdir(d):
+            continue
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            if not (name.startswith("app.asar.agyzh.")
+                    or name.startswith("language_server.agyzh.")):
+                continue
+            if not (name.endswith(".tmp") or name.endswith(".tmp.unpacked")
                     or name.endswith(".tmp.part")):
-                p = os.path.join(resources, name)
-                if os.path.isfile(p):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
-                elif os.path.isdir(p):
-                    shutil.rmtree(p, ignore_errors=True)
-    except OSError:
-        pass
+                continue
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            elif os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -3442,6 +4011,18 @@ def cmd_restore(resources, auto_yes=False, no_kill=False):
     # 再点「恢复原版」，旧备份会把 2.31.2 的 asar 塞进 2.33.0 的安装目录，
     # 造成 asar 与 exe 版本错配，应用直接起不来。
     if not asar_is_localized(asar):
+        # asar 已经是官方原版，但 language_server 可能还留着中文标题补丁。
+        # 这条分支原本会直接 return，不处理就会出现「界面英文、标题中文」的错配。
+        if ls_is_localized(find_language_server(resources)):
+            kill_processes(auto=auto_yes, resources_dir=resources, no_kill=no_kill)
+            if restore_language_server(resources) and IS_MAC:
+                # macOS：语言服务器一还原，主包资源封条里记的哈希就过期了，
+                # 不重签的话 App 会提示「已损坏」打不开。
+                if _codesign_available():
+                    mac_post_deploy(resources, auto_yes=auto_yes)
+                else:
+                    log("未找到 codesign，无法重签（还原后应用可能提示「已损坏」，"
+                        "见 mac/README.md 的修复命令）", warn=True)
         log("当前已是官方英文原版，无需恢复。", ok=True)
         if os.path.isfile(bak):
             log("（检测到旧备份，但它可能是更早的版本，已保留未动）", warn=True)
@@ -3465,6 +4046,12 @@ def cmd_restore(resources, auto_yes=False, no_kill=False):
             pass
         else:
             raise
+    # 标题提示词补丁一并回滚。失败只在日志里提示，不影响 asar 已完成的还原。
+    # 但「已恢复官方英文原版」这句不能无条件打：本来有补丁却还原失败时，
+    # 用户看到的应该是「asar 恢复好了、语言服务器没恢复」，不能含糊过去。
+    ls_was_patched = ls_is_localized(find_language_server(resources))
+    if ls_was_patched and not restore_language_server(resources):
+        log("注意：language_server 未能还原，标题生成器仍是中文版（详见上方提示）", warn=True)
     log("已恢复官方英文原版", ok=True)
 
     # macOS：还原 asar 同样破坏了签名，必须重签，否则还原后反而打不开
@@ -3504,6 +4091,22 @@ def cmd_status(resources):
         log(f"app.asar 大小：{os.path.getsize(asar) / 1048576:.2f} MB")
     except OSError:
         pass
+    # 对话标题生成器状态（三平台同一套补丁；macOS 额外依赖重签，见 mac/README.md）
+    ls_path = find_language_server(resources)
+    if ls_path:
+        if ls_is_localized(ls_path):
+            log("对话标题生成：已中文化（language_server 提示词已替换）", ok=True)
+        else:
+            log("对话标题生成：官方英文（重新运行汉化即可启用中文标题）", warn=True)
+        ls_bak = ls_path + LS_BAK_SUFFIX
+        if os.path.isfile(ls_bak):
+            bad = ls_is_localized(ls_bak)
+            try:
+                mb = os.path.getsize(ls_bak) / 1048576
+                log(f"标题提示词备份：{mb:.0f} MB（{'警告：已被污染' if bad else '正常'}）",
+                    ok=not bad)
+            except OSError:
+                log(f"标题提示词备份：存在（{'警告：已被污染' if bad else '正常'}）", ok=not bad)
     # macOS 追加：签名健康度（这是 Mac 上最常见的故障点）
     mac_status_extra(resources)
 
