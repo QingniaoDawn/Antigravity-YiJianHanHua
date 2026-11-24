@@ -3076,6 +3076,191 @@ def ensure_backup(asar_path):
     return bak, True
 
 
+# ----------------------------------------------------------------------------
+# language_server 对话标题生成提示词汉化（等字节长度替换，零运行时开销）
+# ----------------------------------------------------------------------------
+# 背景：
+#   Antigravity 左侧会话列表的「对话名称」与「章节标题」由 resources/bin/language_server
+#   后台进程调用云端模型自动总结生成。该内部请求使用独立硬编码的系统提示词（不加载
+#   ~/.gemini/config/rules/ 下的全局规则），且原提示词写死了：
+#     "Respond with ONLY a short conversation title (3-5 words, title-cased, no prefix)"
+#   导致即使用户全程用中文提问，生成的对话标题也会被强制翻译成英文（Title Case）。
+#
+# 解法：
+#   对 language_server 中的这两条提示词片段做**严格等字节长度**（214B -> 214B、
+#   238B -> 238B）替换，将其改为要求生成简体中文标题。
+#   由于替换前后的 UTF-8 字节长度完全一致，ELF / PE / Mach-O 二进制内的段偏移、
+#   符号表与 Go 字符串长度头（movq $0x272 / $0x1e1）均保持 100% 原样，零运行时开销。
+LS_TITLE_PATCHES = [
+    (
+        "对话标题中文生成提示词",
+        b"Respond with ONLY a short conversation title (3-5 words, title-cased, no prefix) "
+        b"describing the USER's intent. Keep abbreviations and acronyms from the USER's "
+        b"request as-is rather than guessing what they stand for.",
+        "Respond with ONLY a short Simplified Chinese conversation title "
+        "(简体中文标题, 4-12 Chinese characters, no quotes, no prefix) "
+        "describing the USER's intent. Keep abbreviations/acronyms from USER request as-is.".encode("utf-8"),
+    ),
+    (
+        "章节标题中文生成提示词",
+        b"Reply with only a plain 3 to 6 word title in sentence case, with no quotes or "
+        b"trailing period, naming what the USER worked on; use the replies only as context. "
+        b"For example: Fixing the login redirect bug, or Planning the websocket rollout.",
+        "Reply with only a plain Simplified Chinese title (简体中文, 4-14 chars), with no quotes "
+        "or trailing period, naming what the USER worked on; use the replies only as context. "
+        "E.g. 修复登录重定向问题, or 规划 WebSocket 部署.".encode("utf-8"),
+    ),
+]
+
+
+def find_language_server(resources_dir):
+    """定位 resources/bin 下的 language_server 二进制文件（不存在时返回 None）。"""
+    bin_dir = os.path.join(resources_dir, "bin")
+    if not os.path.isdir(bin_dir):
+        return None
+    for name in ("language_server", "language_server.exe"):
+        p = os.path.join(bin_dir, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def ls_is_localized(ls_path):
+    """字节级检测 language_server 是否已打上中文对话标题补丁。"""
+    if not ls_path or not os.path.isfile(ls_path):
+        return False
+    try:
+        with open(ls_path, "rb") as f:
+            data = f.read()
+        return any(rep in data for _, _, rep in LS_TITLE_PATCHES)
+    except OSError:
+        return False
+
+
+def patch_language_server(resources_dir, work_dir, report):
+    """对 language_server 执行等字节长度的对话标题提示词汉化（带防降级备份与原子替换）。
+    macOS 下因重签名开销与严格校验默认不改二进制；Linux（及 Windows）下自动生效。"""
+    if IS_MAC:
+        return
+    ls_path = find_language_server(resources_dir)
+    if not ls_path:
+        return
+    try:
+        with open(ls_path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        log(f"读取 language_server 失败，跳过标题汉化：{e}", warn=True)
+        return
+
+    # 1. 防降级备份：仅当当前二进制未包含汉化补丁时才刷新 .bak
+    bak = ls_path + ".bak"
+    already_patched = any(rep in raw for _, _, rep in LS_TITLE_PATCHES)
+    if not already_patched:
+        tmp_bak = bak + f".agyzh.{os.getpid()}.tmp"
+        try:
+            shutil.copy2(ls_path, tmp_bak)
+            os.replace(tmp_bak, bak)
+        except PermissionError:
+            if IS_LINUX:
+                _linux_replace_with_admin(ls_path, bak)
+        except OSError:
+            pass
+        finally:
+            try:
+                if os.path.isfile(tmp_bak):
+                    os.remove(tmp_bak)
+            except OSError:
+                pass
+
+    # 2. 等长字节替换（严格断言长度相等，绝不改变二进制任何偏移）
+    new_raw = raw
+    changed = False
+    for label, orig_b, rep_b in LS_TITLE_PATCHES:
+        if len(orig_b) != len(rep_b):
+            report.append(("跳过", f"language_server {label}（字节长度不一致，安全跳过）", False))
+            continue
+        if orig_b in new_raw:
+            new_raw = new_raw.replace(orig_b, rep_b, 1)
+            changed = True
+            report.append(("替换", f"language_server {label}（{len(orig_b)} 字节等长替换）", True))
+        elif rep_b in new_raw:
+            report.append(("已生效", f"language_server {label}", True))
+        else:
+            report.append(("未命中", f"language_server {label}（官方提示词变动，不影响主界面）", False))
+
+    if not changed or len(new_raw) != len(raw):
+        return
+
+    # 3. 保持原有可执行权限位（0755）并做 POSIX 原子替换（即使进程正在运行也不会 ETXTBSY）
+    try:
+        st_mode = os.stat(ls_path).st_mode & 0o7777
+    except OSError:
+        st_mode = 0o755
+    bin_dir = os.path.dirname(ls_path)
+    temp_dir = bin_dir if os.access(bin_dir, os.W_OK) else work_dir
+    temp_ls = os.path.join(temp_dir, f"language_server.agyzh.{os.getpid()}.tmp")
+    try:
+        with open(temp_ls, "wb") as f:
+            f.write(new_raw)
+        os.chmod(temp_ls, st_mode)
+        try:
+            os.replace(temp_ls, ls_path)
+            log("对话标题中文化：language_server 提示词补丁已部署（原版备份在同目录 .bak）", ok=True)
+        except (PermissionError, OSError) as e:
+            import errno as _errno
+            if isinstance(e, OSError) and getattr(e, "errno", None) == _errno.EXDEV and os.access(bin_dir, os.W_OK):
+                local_tmp = os.path.join(bin_dir, f"language_server.agyzh.{os.getpid()}.tmp")
+                shutil.copy2(temp_ls, local_tmp)
+                os.chmod(local_tmp, st_mode)
+                os.replace(local_tmp, ls_path)
+                log("对话标题中文化：language_server 提示词补丁已部署（原版备份在同目录 .bak）", ok=True)
+            elif IS_LINUX and _linux_replace_with_admin(temp_ls, ls_path):
+                log("对话标题中文化：language_server 提示词补丁已通过提权部署", ok=True)
+            else:
+                log(f"更新 language_server 失败（跳过对话标题补丁，不影响界面汉化）：{e}", warn=True)
+    finally:
+        try:
+            if os.path.isfile(temp_ls):
+                os.remove(temp_ls)
+        except OSError:
+            pass
+
+
+def restore_language_server(resources_dir):
+    """若 language_server 存在官方备份且已被汉化，则一并原子还原。"""
+    ls_path = find_language_server(resources_dir)
+    if not ls_path or not ls_is_localized(ls_path):
+        return False
+    bak = ls_path + ".bak"
+    if not os.path.isfile(bak) or ls_is_localized(bak):
+        log("未找到干净的 language_server.bak，跳过标题生成器还原", warn=True)
+        return False
+    try:
+        st_mode = os.stat(ls_path).st_mode & 0o7777
+    except OSError:
+        st_mode = 0o755
+    tmp = ls_path + f".restore.{os.getpid()}.tmp"
+    try:
+        shutil.copy2(bak, tmp)
+        os.chmod(tmp, st_mode)
+        os.replace(tmp, ls_path)
+        log("已同步恢复 language_server 官方原版", ok=True)
+        return True
+    except PermissionError:
+        if IS_LINUX and _linux_replace_with_admin(bak, ls_path):
+            log("已通过提权恢复 language_server 官方原版", ok=True)
+            return True
+    except OSError as e:
+        log(f"恢复 language_server 失败：{e}", warn=True)
+    finally:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+    return False
+
+
 def get_asar_version(extract_dir):
     try:
         pkg = json.load(open(os.path.join(extract_dir, "package.json"), encoding='utf-8'))
@@ -3352,6 +3537,8 @@ def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
     if not replaced:
         cleanup_temp(resources, work)
         die("替换 app.asar 失败，已中止（原文件未被修改）。")
+    # 8a-2. 对话标题生成提示词汉化（对 resources/bin/language_server 做等字节替换）
+    patch_language_server(resources, work, report)
     # unpacked 目录：内容与官方完全一致（我们只改 dist/），无需变动；
     # 打包产生的临时 unpacked 目录清理掉
     cleanup_temp(resources, work)
@@ -3410,30 +3597,35 @@ def cmd_apply(resources, npx, auto_yes=False, no_kill=False):
 
 
 def cleanup_temp(resources, work):
-    # 清理本次 PID 的临时产物 + 任意历史残留（app.asar.agyzh.*.tmp）
-    try:
-        for name in os.listdir(resources):
-            # .tmp.part 是内置打包器的写入中间态：进程被强杀时会残留，
-            # 不认它就会在 resources 里留一个几十 MB 的垃圾文件。
-            if name.startswith("app.asar.agyzh.") and (
-                    name.endswith(".tmp") or name.endswith(".tmp.unpacked")
-                    or name.endswith(".tmp.part")):
-                p = os.path.join(resources, name)
-                if os.path.isfile(p):
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
-                elif os.path.isdir(p):
-                    shutil.rmtree(p, ignore_errors=True)
-    except OSError:
-        pass
+    # 清理本次 PID 的临时产物 + 任意历史残留（app.asar.agyzh.*.tmp / language_server.agyzh.*.tmp）
+    for d in (resources, os.path.join(resources, "bin")):
+        try:
+            if not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                # .tmp.part 是内置打包器的写入中间态：进程被强杀时会残留，
+                # 不认它就会在 resources 里留一个几十 MB 的垃圾文件。
+                if (name.startswith("app.asar.agyzh.") or name.startswith("language_server.agyzh.")) and (
+                        name.endswith(".tmp") or name.endswith(".tmp.unpacked")
+                        or name.endswith(".tmp.part")):
+                    p = os.path.join(d, name)
+                    if os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+                    elif os.path.isdir(p):
+                        shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass
     shutil.rmtree(work, ignore_errors=True)
 
 
 def cmd_restore(resources, auto_yes=False, no_kill=False):
     asar = os.path.join(resources, "app.asar")
     bak = asar + ".bak"
+    ls_path = find_language_server(resources)
+    ls_loc = ls_is_localized(ls_path)
     print("=" * 62)
     print("  恢复官方英文原版")
     print("=" * 62)
@@ -3442,6 +3634,8 @@ def cmd_restore(resources, auto_yes=False, no_kill=False):
     # 再点「恢复原版」，旧备份会把 2.31.2 的 asar 塞进 2.33.0 的安装目录，
     # 造成 asar 与 exe 版本错配，应用直接起不来。
     if not asar_is_localized(asar):
+        if ls_loc:
+            restore_language_server(resources)
         log("当前已是官方英文原版，无需恢复。", ok=True)
         if os.path.isfile(bak):
             log("（检测到旧备份，但它可能是更早的版本，已保留未动）", warn=True)
@@ -3465,6 +3659,7 @@ def cmd_restore(resources, auto_yes=False, no_kill=False):
             pass
         else:
             raise
+    restore_language_server(resources)
     log("已恢复官方英文原版", ok=True)
 
     # macOS：还原 asar 同样破坏了签名，必须重签，否则还原后反而打不开
@@ -3504,6 +3699,10 @@ def cmd_status(resources):
         log(f"app.asar 大小：{os.path.getsize(asar) / 1048576:.2f} MB")
     except OSError:
         pass
+    ls_path = find_language_server(resources)
+    if ls_path and not IS_MAC:
+        ls_loc = ls_is_localized(ls_path)
+        log(f"对话标题生成：{'已中文化（language_server 已补丁）' if ls_loc else '官方英文标题'}", ok=ls_loc)
     # macOS 追加：签名健康度（这是 Mac 上最常见的故障点）
     mac_status_extra(resources)
 
