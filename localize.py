@@ -3658,6 +3658,50 @@ def _report_failures(report):
 # 每个文件首次修改前会留一份 .agyzhbak 备份，「恢复官方原版」时自动还原。
 # 官方更新插件会覆盖这些文件（文案变回英文），重跑一次汉化即可恢复。
 PLUGIN_UI_SUFFIX = ".agyzhbak"
+PLUGIN_UI_TMP = ".agyzh.tmp"
+
+
+def _plugin_atomic_write_text(path, text):
+    """同目录写临时文件再 os.replace，避免中途失败留下半截文件。
+
+    插件文件一旦被截断，插件面板会直接白屏，所以这里必须原子。
+    """
+    tmp = path + PLUGIN_UI_TMP
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _plugin_atomic_backup(src, bak):
+    """先复制到临时文件并校验大小，再原子改名为备份。"""
+    tmp = bak + PLUGIN_UI_TMP
+    try:
+        shutil.copy2(src, tmp)
+        if os.path.getsize(tmp) != os.path.getsize(src):
+            raise OSError("备份大小与源文件不一致")
+        os.replace(tmp, bak)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
 
 
 def plugin_asset_roots():
@@ -3720,18 +3764,13 @@ def patch_plugin_ui(data, report, roots=None):
                 continue
             bak = path + PLUGIN_UI_SUFFIX
             if not os.path.exists(bak):
-                try:
-                    shutil.copy2(path, bak)
-                except OSError as e:
+                if not _plugin_atomic_backup(path, bak):
                     failed += 1
-                    report.append(("跳过", f"插件界面文案（备份失败：{os.path.basename(path)}：{e}）", False))
+                    report.append(("跳过", f"插件界面文案（备份失败：{os.path.basename(path)}）", False))
                     continue
-            try:
-                with open(path, "w", encoding="utf-8", newline="") as f:
-                    f.write(out)
-            except OSError as e:
+            if not _plugin_atomic_write_text(path, out):
                 failed += 1
-                report.append(("跳过", f"插件界面文案（写入失败：{os.path.basename(path)}：{e}）", False))
+                report.append(("跳过", f"插件界面文案（写入失败：{os.path.basename(path)}）", False))
                 continue
             changed_files += 1
             total_hits += hits
@@ -3744,22 +3783,36 @@ def patch_plugin_ui(data, report, roots=None):
 
 
 def restore_plugin_ui(report, roots=None):
-    """从 .agyzhbak 还原插件界面文件，并删除备份"""
+    """从 .agyzhbak 还原插件界面文件（原子替换，备份随移动消失）"""
     roots = roots if roots is not None else plugin_asset_roots()
     restored = 0
     for root in roots:
         for dp, _, fs in os.walk(root):
             for f in fs:
+                # 清掉上次异常中断留下的临时文件
+                if f.endswith(PLUGIN_UI_TMP):
+                    try:
+                        os.remove(os.path.join(dp, f))
+                    except OSError:
+                        pass
+                    continue
                 if not f.endswith(PLUGIN_UI_SUFFIX):
                     continue
                 bak = os.path.join(dp, f)
                 orig = bak[: -len(PLUGIN_UI_SUFFIX)]
-                try:
-                    shutil.copy2(bak, orig)
-                    os.remove(bak)
+                ok = False
+                for attempt in range(3):
+                    try:
+                        os.replace(bak, orig)   # 原子：成功即备份消失
+                        ok = True
+                        break
+                    except OSError:
+                        if IS_WIN:
+                            time.sleep(0.3)     # Windows 上可能被杀毒/索引短暂占用
+                            continue
+                        break
+                if ok:
                     restored += 1
-                except OSError:
-                    pass
     if restored:
         report.append(("还原", f"插件界面文案：{restored} 个文件", True))
     return restored
